@@ -18,7 +18,7 @@ EXPIRY_SAFETY_MARGIN_SECONDS = 30
 class PATAuthenticator:
     """Exchanges a Personal Access Token (client_id/client_secret) for a short-lived JWT.
 
-    Mirrors the client_credentials flow used by opteryx_sqlalchemy's DBAPI driver:
+    Mirrors the client_credentials flow used by opteryx-sqlalchemy's DBAPI driver:
     POSTs to `{auth_url}/token` with `grant_type=client_credentials`, caches the
     resulting access token, and transparently re-authenticates once it's close to
     expiring. Pass an instance directly as `UploadClient(token=...)` - it's callable.
