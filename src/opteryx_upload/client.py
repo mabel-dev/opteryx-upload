@@ -12,8 +12,10 @@ from typing import Union
 import requests
 
 from .chunking import DEFAULT_MAX_PART_BYTES
+from .chunking import DEFAULT_MAX_SOURCE_BYTES
 from .chunking import detect_kind
-from .chunking import iter_chunks
+from .chunking import iter_upload_chunks
+from .compression import resolve as _resolve_compression
 from .exceptions import UploadClientError
 from .exceptions import error_for_response
 from .models import CommitResult
@@ -50,11 +52,20 @@ class UploadSession:
         *,
         filename: Optional[str] = None,
         content_type: str = "application/octet-stream",
+        encoding: Optional[str] = None,
     ) -> None:
-        """Upload raw bytes as a single part (0-999). Overwrites any existing part with the same number."""
+        """Upload raw bytes as a single part (0-999). Overwrites any existing part with the same number.
+
+        `data` is sent exactly as given. Pass `encoding` when it is already
+        compressed - "gzip" or "zstd" - and it is declared to the server as
+        `Content-Encoding`; the 30MB part limit then applies to these compressed
+        bytes, and a separate 200MB limit to what they decode to.
+        """
         headers = {"Content-Type": content_type}
         if filename:
             headers["x-file-name"] = filename
+        if encoding:
+            headers["Content-Encoding"] = encoding
         self._client._request(
             "PUT",
             f"/v1/upload/{self.session_id}",
@@ -69,12 +80,22 @@ class UploadSession:
         *,
         start_part: Optional[int] = None,
         max_part_bytes: int = DEFAULT_MAX_PART_BYTES,
+        max_source_bytes: int = DEFAULT_MAX_SOURCE_BYTES,
+        compression: Optional[str] = "auto",
     ) -> List[int]:
         """Upload a local file, splitting CSV/NDJSON automatically to stay under the part size limit.
 
         Returns the list of part numbers used. Parquet files are not split; if a
         parquet file is too large, write it as multiple smaller parquet files and
         upload each with `upload_file`/`upload_part` instead.
+
+        Parts are compressed by default. `compression="auto"` uses zstd when the
+        `zstandard` package is installed and gzip otherwise, and leaves parquet
+        alone because it is already compressed. Pass `"gzip"`, `"zstd"`, or `None`
+        to choose explicitly. Because the server's 30MB part limit applies to the
+        compressed bytes, a compressed part carries far more rows - so this mostly
+        shows up as needing many fewer parts for the same file, bounded by
+        `max_source_bytes` (the server decodes at most 200MB per part).
 
         Every part number consumed here is reserved on the session, so a later
         `upload_file` starts after them rather than overwriting them. Parts are
@@ -88,12 +109,25 @@ class UploadSession:
             "csv": "text/csv",
             "ndjson": "application/x-ndjson",
         }[kind]
+        codec = _resolve_compression(compression, kind)
 
         next_part = start_part if start_part is not None else self._client._next_part(self)
         used_parts: List[int] = []
         try:
-            for chunk in iter_chunks(path, kind, max_bytes=max_part_bytes):
-                self.upload_part(chunk, next_part, filename=filename, content_type=content_type)
+            for chunk, _ in iter_upload_chunks(
+                path,
+                kind,
+                codec=codec,
+                max_wire_bytes=max_part_bytes,
+                max_source_bytes=max_source_bytes,
+            ):
+                self.upload_part(
+                    chunk,
+                    next_part,
+                    filename=filename,
+                    content_type=content_type,
+                    encoding=codec,
+                )
                 used_parts.append(next_part)
                 next_part += 1
         finally:

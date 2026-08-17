@@ -8,6 +8,14 @@ Python client SDK for the [Opteryx Upload Service](https://github.com/mabel-dev/
 pip install opteryx-upload
 ```
 
+Parts are compressed before upload. gzip comes from the standard library, so that
+works out of the box; installing the `zstd` extra adds a denser and faster codec,
+which the SDK then selects automatically:
+
+```bash
+pip install "opteryx-upload[zstd]"
+```
+
 ## Usage
 
 ```python
@@ -17,7 +25,7 @@ client = UploadClient(token="<jwt>")  # or token=lambda: fetch_fresh_token()
 
 session = client.create_session()
 session.upload_file("findings.parquet")
-session.upload_file("more_findings.csv")  # auto-split into <30MB parts if needed
+session.upload_file("more_findings.csv")  # compressed, and auto-split if still too big
 
 result = session.inspect()
 if result.has_issues:
@@ -182,6 +190,16 @@ client.upload_and_commit(["findings.parquet"], Target("acme", "security", "findi
   multiple parts (CSV chunks repeat the header row). Parquet is a binary format and
   cannot be split this way — write multiple smaller parquet files and upload each as
   a separate part if a single export is too large.
+- CSV and NDJSON parts are compressed before upload and sent with `Content-Encoding`.
+  `compression="auto"` (the default) uses zstd when `zstandard` is installed and gzip
+  otherwise; pass `"gzip"`, `"zstd"` or `None` to choose explicitly. Parquet is never
+  compressed — it already is, internally.
+
+  This matters more than bandwidth: the server's 30MB part limit applies to the
+  *compressed* bytes, so a compressed part carries far more rows and a large file
+  needs far fewer parts. A 55MB NDJSON export goes from 2 parts to 1 at ~7x. Parts
+  are also bounded by `max_source_bytes` (default 190MB), because the server decodes
+  at most 200MB per part.
 - Errors map to typed exceptions (`AuthenticationError`, `SessionExpiredError`,
   `ConflictError`, `UnprocessableEntityError`, etc.) so callers can catch specific
   failure modes instead of parsing HTTP status codes.

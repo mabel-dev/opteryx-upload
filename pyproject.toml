@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opteryx-upload"
-version = "0.2.1"
+version = "0.2.2"
 description = "Client SDK for the Opteryx Upload Service"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -14,9 +14,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# gzip comes from the standard library, so compression works with no extras;
+# zstd is denser and faster, and is picked automatically when it is installed.
+zstd = [
+    "zstandard>=0.22,<1",
+]
 dev = [
     "pytest>=7",
     "responses>=0.23",
+    "zstandard>=0.22,<1",
 ]
 
 [project.urls]
