@@ -18,7 +18,7 @@ from .models import PartInfo
 from .models import SessionInfo
 from .models import Target
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "UploadClient",

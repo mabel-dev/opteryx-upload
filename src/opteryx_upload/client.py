@@ -75,6 +75,11 @@ class UploadSession:
         Returns the list of part numbers used. Parquet files are not split; if a
         parquet file is too large, write it as multiple smaller parquet files and
         upload each with `upload_file`/`upload_part` instead.
+
+        Every part number consumed here is reserved on the session, so a later
+        `upload_file` starts after them rather than overwriting them. Parts are
+        reserved even if an upload fails part-way through, so a retry does not
+        clobber the parts that did land.
         """
         kind = detect_kind(path)
         filename = os.path.basename(path)
@@ -85,11 +90,14 @@ class UploadSession:
         }[kind]
 
         next_part = start_part if start_part is not None else self._client._next_part(self)
-        used_parts = []
-        for chunk in iter_chunks(path, kind, max_bytes=max_part_bytes):
-            self.upload_part(chunk, next_part, filename=filename, content_type=content_type)
-            used_parts.append(next_part)
-            next_part += 1
+        used_parts: List[int] = []
+        try:
+            for chunk in iter_chunks(path, kind, max_bytes=max_part_bytes):
+                self.upload_part(chunk, next_part, filename=filename, content_type=content_type)
+                used_parts.append(next_part)
+                next_part += 1
+        finally:
+            self._client._reserve_parts_through(self, next_part)
         return used_parts
 
     def delete_part(self, part: int) -> None:
@@ -176,6 +184,16 @@ class UploadClient:
         n = self._part_counters.get(session.session_id, 0)
         self._part_counters[session.session_id] = n + 1
         return n
+
+    def _reserve_parts_through(self, session: UploadSession, next_free_part: int) -> None:
+        """Mark every part below `next_free_part` as consumed on `session`.
+
+        A single `upload_file` can use several part numbers, and `start_part` lets a
+        caller pick where to write. The counter only ever moves forwards, so parts
+        already handed out are never reissued and cannot be silently overwritten.
+        """
+        current = self._part_counters.get(session.session_id, 0)
+        self._part_counters[session.session_id] = max(current, next_free_part)
 
     def _request(
         self,
