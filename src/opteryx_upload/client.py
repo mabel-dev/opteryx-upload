@@ -21,6 +21,7 @@ from .exceptions import error_for_response
 from .models import CommitResult
 from .models import ConflictResolution
 from .models import InspectResult
+from .models import PartAccepted
 from .models import SessionInfo
 from .models import Target
 
@@ -45,6 +46,16 @@ class UploadSession:
     def session_id(self) -> str:
         return self.info.session_id
 
+    @property
+    def target(self) -> Optional[Target]:
+        """The dataset this session writes to, bound when it was created."""
+        return self.info.target
+
+    @property
+    def declared_schema(self) -> Optional[Dict[str, str]]:
+        """The target's declared columns, or None when its types will be inferred."""
+        return self.info.declared_schema
+
     def upload_part(
         self,
         data: bytes,
@@ -53,26 +64,34 @@ class UploadSession:
         filename: Optional[str] = None,
         content_type: str = "application/octet-stream",
         encoding: Optional[str] = None,
-    ) -> None:
+    ) -> PartAccepted:
         """Upload raw bytes as a single part (0-999). Overwrites any existing part with the same number.
 
         `data` is sent exactly as given. Pass `encoding` when it is already
         compressed - "gzip" or "zstd" - and it is declared to the server as
         `Content-Encoding`; the 30MB part limit then applies to these compressed
         bytes, and a separate 200MB limit to what they decode to.
+
+        The part is validated and cast against the session's target as it lands,
+        so the returned `PartAccepted` says what the data now IS - its logical
+        types, the widenings applied, and anything about it worth flagging. A
+        value that cannot be stored as the column the dataset declares raises
+        `ConflictError` here, rather than at commit after every byte has been
+        sent.
         """
         headers = {"Content-Type": content_type}
         if filename:
             headers["x-file-name"] = filename
         if encoding:
             headers["Content-Encoding"] = encoding
-        self._client._request(
+        response = self._client._request(
             "PUT",
             f"/v1/upload/{self.session_id}",
             params={"part": part},
             data=data,
             headers=headers,
         )
+        return PartAccepted.from_response(response, part)
 
     def upload_file(
         self,
@@ -146,13 +165,19 @@ class UploadSession:
 
     def commit(
         self,
-        target: Target,
+        target: Optional[Target] = None,
         *,
         snapshot_message: Optional[str] = None,
         conflict_resolution: ConflictResolution = ConflictResolution.FAIL,
     ) -> CommitResult:
+        """Publish the staged parts to the session's target.
+
+        The target is the one the session was created with - passing it again is
+        allowed and is checked, not obeyed: a commit naming a different dataset
+        from the one every part was validated against is refused.
+        """
         body = {
-            "target": target.as_dict(),
+            "target": (target or self.target).as_dict() if (target or self.target) else None,
             "snapshot_message": snapshot_message,
             "conflict_resolution": ConflictResolution(conflict_resolution).value,
         }
@@ -167,9 +192,9 @@ class UploadClient:
 
     Example:
         client = UploadClient(token="<jwt>")
-        session = client.create_session()
+        session = client.create_session(Target("acme", "security", "findings"))
         session.upload_file("data.parquet")
-        session.commit(Target("acme", "security", "findings"), snapshot_message="initial load")
+        session.commit(snapshot_message="initial load")
     """
 
     def __init__(
@@ -190,8 +215,18 @@ class UploadClient:
         self._http = session or requests.Session()
         self._part_counters: Dict[str, int] = {}
 
-    def create_session(self) -> UploadSession:
-        response = self._request("POST", "/v1/upload/session")
+    def create_session(self, target: Target) -> UploadSession:
+        """Open a session against `target`.
+
+        The target belongs to the session, not to the commit. Everything the
+        service can usefully tell you about an upload - the types your data will
+        end up as, the widenings it will apply, a value that will not fit - needs
+        a schema to measure against, and measuring it as each part arrives means
+        finding out before the rest of the file has been sent rather than after.
+        """
+        response = self._request(
+            "POST", "/v1/upload/session", json={"target": target.as_dict()}
+        )
         info = SessionInfo.from_response(response)
         self._part_counters[info.session_id] = 0
         return UploadSession(self, info)
@@ -205,11 +240,10 @@ class UploadClient:
         conflict_resolution: ConflictResolution = ConflictResolution.FAIL,
     ) -> CommitResult:
         """Convenience helper: create a session, upload every file in `paths`, and commit."""
-        session = self.create_session()
+        session = self.create_session(target)
         for path in paths:
             session.upload_file(path)
         return session.commit(
-            target,
             snapshot_message=snapshot_message,
             conflict_resolution=conflict_resolution,
         )

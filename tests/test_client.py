@@ -40,7 +40,7 @@ def test_create_session(client):
         },
         status=201,
     )
-    session = client.create_session()
+    session = client.create_session(Target("acme", "security", "findings"))
     assert session.session_id == "20260101000000-abc123"
     auth_header = responses.calls[0].request.headers["Authorization"]
     assert auth_header == "Bearer test-token"
@@ -77,7 +77,7 @@ def test_upload_part_and_commit(client):
         status=200,
     )
 
-    session = client.create_session()
+    session = client.create_session(Target("acme", "security", "findings"))
     session.upload_part(b"a,b\n1,2\n", part=0, filename="data.csv", content_type="text/csv")
 
     commit = session.commit(
@@ -196,7 +196,7 @@ def test_upload_file_multi_chunk_uses_consecutive_parts(client, tmp_path):
     _stub_session_and_parts()
     path = _write_csv(tmp_path / "data.csv")
 
-    session = client.create_session()
+    session = client.create_session(Target("acme", "security", "findings"))
     used = session.upload_file(path, max_part_bytes=200, compression=None)
 
     assert len(used) > 1
@@ -210,7 +210,7 @@ def test_second_upload_file_does_not_overwrite_earlier_parts(client, tmp_path):
     first = _write_csv(tmp_path / "first.csv")
     second = _write_csv(tmp_path / "second.csv")
 
-    session = client.create_session()
+    session = client.create_session(Target("acme", "security", "findings"))
     used_first = session.upload_file(first, max_part_bytes=200, compression=None)
     used_second = session.upload_file(second, max_part_bytes=200, compression=None)
 
@@ -230,7 +230,7 @@ def test_upload_file_reserves_parts_when_start_part_given(client, tmp_path):
     explicit = _write_csv(tmp_path / "explicit.csv")
     followup = _write_csv(tmp_path / "followup.csv")
 
-    session = client.create_session()
+    session = client.create_session(Target("acme", "security", "findings"))
     used_explicit = session.upload_file(explicit, start_part=10, max_part_bytes=200, compression=None)
     used_followup = session.upload_file(followup, max_part_bytes=200, compression=None)
 
@@ -243,7 +243,7 @@ def test_upload_file_reserves_parts_written_before_a_failure(client, tmp_path):
     _stub_session_and_parts()
     path = _write_csv(tmp_path / "data.csv")
 
-    session = client.create_session()
+    session = client.create_session(Target("acme", "security", "findings"))
     patched = mock.patch.object(
         UploadSession, "upload_part", side_effect=[None, UploadClientError("boom")]
     )
@@ -341,7 +341,7 @@ def test_upload_file_compresses_and_declares_encoding(client, tmp_path, codec):
     path = _write_csv(tmp_path / "data.csv", rows=500)
     original = open(path, "rb").read()
 
-    session = client.create_session()
+    session = client.create_session(Target("acme", "security", "findings"))
     used = session.upload_file(path, compression=codec)
 
     assert len(used) == 1
@@ -359,7 +359,7 @@ def test_upload_file_auto_picks_best_available_codec(client, tmp_path):
     _stub_session_and_parts()
     path = _write_csv(tmp_path / "data.csv", rows=500)
 
-    session = client.create_session()
+    session = client.create_session(Target("acme", "security", "findings"))
     session.upload_file(path)  # compression defaults to "auto"
 
     assert _put_calls()[0].request.headers["Content-Encoding"] == default_codec()
@@ -370,7 +370,7 @@ def test_upload_file_uncompressed_sends_no_encoding_header(client, tmp_path):
     _stub_session_and_parts()
     path = _write_csv(tmp_path / "data.csv")
 
-    session = client.create_session()
+    session = client.create_session(Target("acme", "security", "findings"))
     session.upload_file(path, compression=None)
 
     request = _put_calls()[0].request
@@ -384,7 +384,7 @@ def test_parquet_is_never_compressed(client, tmp_path):
     path = tmp_path / "data.parquet"
     path.write_bytes(b"PAR1" + b"\x00" * 500)
 
-    session = client.create_session()
+    session = client.create_session(Target("acme", "security", "findings"))
     session.upload_file(str(path))  # "auto"
 
     request = _put_calls()[0].request
@@ -464,3 +464,127 @@ def test_unknown_codec_rejected(tmp_path):
     path = _write_csv(tmp_path / "data.csv")
     with pytest.raises(ValueError):
         list(iter_upload_chunks(path, "csv", codec="snappy"))
+
+
+@responses.activate
+def test_create_session_sends_target_and_reports_declared_schema(client):
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/v1/upload/session",
+        json={
+            "session_id": "sess-t",
+            "url": f"{BASE_URL}/v1/upload/sess-t",
+            "expires_at": "2026-01-01T06:00:00Z",
+            "parts": True,
+            "target": {"workspace": "home", "collection": "network", "dataset": "syslog"},
+            "declared_schema": {"source_ip": "IPV4", "ingest_time": "TIMESTAMP[us]"},
+        },
+        status=201,
+    )
+    session = client.create_session(Target("home", "network", "syslog"))
+
+    body = json.loads(responses.calls[0].request.body)
+    assert body["target"] == {
+        "workspace": "home",
+        "collection": "network",
+        "dataset": "syslog",
+    }
+    assert session.target == Target("home", "network", "syslog")
+    assert session.declared_schema["source_ip"] == "IPV4"
+
+
+@responses.activate
+def test_upload_part_returns_the_logical_types(client):
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/v1/upload/session",
+        json={
+            "session_id": "sess-r",
+            "url": f"{BASE_URL}/v1/upload/sess-r",
+            "expires_at": "2026-01-01T06:00:00Z",
+            "target": {"workspace": "home", "collection": "network", "dataset": "syslog"},
+        },
+        status=201,
+    )
+    responses.add(
+        responses.PUT,
+        f"{BASE_URL}/v1/upload/sess-r",
+        json={
+            "status": "stored",
+            "part": 0,
+            "rows": 2,
+            "schema": {
+                "columns": [
+                    {
+                        "name": "source_ip",
+                        "type": "IPV4",
+                        "from": "VARCHAR",
+                        "action": "cast",
+                    },
+                    {
+                        "name": "facility",
+                        "type": "INT64",
+                        "from": "INT32",
+                        "action": "widen",
+                    },
+                ]
+            },
+            "issues": [{"issue": "Column 'extra' is not declared by the dataset", "part": 0, "column": "extra"}],
+        },
+        status=201,
+    )
+    session = client.create_session(Target("home", "network", "syslog"))
+    accepted = session.upload_part(b"{}\n", part=0, filename="d.ndjson")
+
+    assert accepted.rows == 2
+    assert [c["type"] for c in accepted.columns] == ["IPV4", "INT64"]
+    assert accepted.columns[0]["action"] == "cast"
+    assert accepted.has_issues
+    assert accepted.issues[0].column == "extra"
+
+
+@responses.activate
+def test_commit_uses_the_session_target_without_being_told(client):
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/v1/upload/session",
+        json={
+            "session_id": "sess-c",
+            "url": f"{BASE_URL}/v1/upload/sess-c",
+            "expires_at": "2026-01-01T06:00:00Z",
+            "target": {"workspace": "home", "collection": "network", "dataset": "syslog"},
+        },
+        status=201,
+    )
+    responses.add(
+        responses.POST,
+        f"{BASE_URL}/v1/upload/sess-c/commit",
+        json={
+            "table": "home.network.syslog",
+            "commit_id": "snap_1",
+            "rows_written": 2,
+            "files_created": 1,
+        },
+        status=200,
+    )
+    session = client.create_session(Target("home", "network", "syslog"))
+    result = session.commit(snapshot_message="init")
+
+    assert result.table == "home.network.syslog"
+    commit_call = [c for c in responses.calls if c.request.url.endswith("/commit")][0]
+    assert json.loads(commit_call.request.body)["target"] == {
+        "workspace": "home",
+        "collection": "network",
+        "dataset": "syslog",
+    }
+
+
+@responses.activate
+def test_part_accepted_tolerates_a_service_with_no_report(client):
+    from opteryx_upload.models import PartAccepted
+
+    accepted = PartAccepted.from_response(None, 3)
+    assert accepted.part == 3
+    assert accepted.status == "stored"
+    assert accepted.columns == []
+    assert not accepted.has_issues

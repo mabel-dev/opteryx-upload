@@ -14,11 +14,12 @@ from .models import CommitResult
 from .models import ConflictResolution
 from .models import InspectResult
 from .models import Issue
+from .models import PartAccepted
 from .models import PartInfo
 from .models import SessionInfo
 from .models import Target
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 __all__ = [
     "UploadClient",
@@ -27,6 +28,7 @@ __all__ = [
     "Target",
     "ConflictResolution",
     "SessionInfo",
+    "PartAccepted",
     "PartInfo",
     "Issue",
     "InspectResult",
