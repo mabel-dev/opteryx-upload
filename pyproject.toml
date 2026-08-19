@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opteryx-upload"
-version = "0.3.0"
+version = "0.4.0"
 description = "Client SDK for the Opteryx Upload Service"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -25,6 +25,12 @@ dev = [
     "zstandard>=0.22,<1",
 ]
 
+[project.scripts]
+# The CLI is stdlib only - argparse and curses. This package goes into other
+# people's dependency trees, and a client SDK that drags a TUI framework in
+# behind it is a cost paid by everyone who only wanted `ContractClient`.
+opteryx-upload = "opteryx_upload.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/mabel-dev/opteryx-upload"
 
@@ -34,6 +40,9 @@ where = ["src"]
 [tool.isort]
 profile = "black"
 line_length = 100
+# Every file in this package is written one import per line; without this the
+# config says otherwise and a formatter run silently restyles the lot.
+force_single_line = true
 
 [tool.ruff]
 line-length = 100

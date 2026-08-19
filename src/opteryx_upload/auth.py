@@ -16,16 +16,16 @@ EXPIRY_SAFETY_MARGIN_SECONDS = 30
 
 
 class PATAuthenticator:
-    """Exchanges a Personal Access Token (client_id/client_secret) for a short-lived JWT.
+    """Exchanges an access token (username/token) for a short-lived JWT.
 
     Mirrors the client_credentials flow used by opteryx-sqlalchemy's DBAPI driver:
     POSTs to `{auth_url}/token` with `grant_type=client_credentials`, caches the
-    resulting access token, and transparently re-authenticates once it's close to
+    resulting assertion, and transparently re-authenticates once it's close to
     expiring. Pass an instance directly as `UploadClient(token=...)` - it's callable.
 
     Args:
-        client_id: The client/principal id issued alongside the PAT.
-        client_secret: The PAT secret (format `opt_<random>_01`).
+        client_id: The access token username issued alongside the token.
+        client_secret: The access token itself (format `opt_<random>_01`).
         auth_url: Base URL of the authenticate service.
     """
 
@@ -81,7 +81,9 @@ class PATAuthenticator:
             except ValueError:
                 detail = response.text
             raise AuthenticationError(
-                f"PAT exchange failed: {detail}", status_code=response.status_code, detail=detail
+                f"access token exchange failed: {detail}",
+                status_code=response.status_code,
+                detail=detail,
             )
 
         body = response.json()
