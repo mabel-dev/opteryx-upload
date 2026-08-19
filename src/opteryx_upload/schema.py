@@ -6,8 +6,13 @@ nobody said otherwise is how a column of dotted quads is catalogued as VARCHAR
 forever - and once it is, no amount of reading the data back can tell you it was
 a mistake.
 
-The same three modes the studio's upload drawer shows as radio buttons. A script
-and a person are making the same decision, so they say it the same way.
+`auto` is a fourth way to ASK and not a fourth answer: it resolves to one of the
+three from the destination, before a contract exists. The rule it keeps is the
+one that matters - an inferred schema is still shown and still has to be
+accepted.
+
+A script and a person are making the same decision, so they say it the same way:
+this is what the studio's upload drawer sends too.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ from typing import Union
 
 @dataclass(frozen=True)
 class Schema:
-    """A schema source. Build one with `declared`, `inferred` or `of_dataset`."""
+    """A schema source. Build one with `declared`, `inferred`, `of_dataset` or `auto`."""
 
     mode: str
     columns: Optional[List[Dict[str, str]]] = None
@@ -57,6 +62,28 @@ class Schema:
         instead of catalogueing a guess.
         """
         return cls(mode="infer")
+
+    @classmethod
+    def auto(cls, write: str = "append") -> "Schema":
+        """Work the source out from the destination.
+
+        Not a fourth source of types, and not a default either - it asks the
+        service to look up something it already knows. A dataset that declares
+        its columns supplies them; one that does not exist has them inferred.
+        Making a caller state which case they are in is making them look up the
+        answer themselves, and getting it wrong costs them an error for nothing.
+
+        The decision survives intact. An inferred schema still comes back
+        `proposed` and still refuses writes until it is accepted, so nothing is
+        catalogued that nobody looked at. What is removed is the question with
+        only one possible answer.
+
+        The contract that comes back names the mode it resolved to, so `auto`
+        never appears downstream.
+        """
+        if write not in ("append", "overwrite"):
+            raise ValueError("write must be 'append' or 'overwrite'")
+        return cls(mode="auto", write=write)
 
     @classmethod
     def of_dataset(cls, write: str = "append") -> "Schema":

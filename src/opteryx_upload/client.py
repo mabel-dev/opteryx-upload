@@ -351,7 +351,7 @@ class ContractClient(UploadClient):
         schema: "Schema",
         *,
         ignore: Optional[List[str]] = None,
-        on_conflict: str = "fail",
+        on_conflict: str = "append",
         sample_bytes: int = _DEFAULT_SAMPLE_BYTES,
     ) -> "Contract":
         """Agree what the data will become. Uploads nothing.
@@ -390,7 +390,7 @@ class ContractClient(UploadClient):
         *,
         message: Optional[str] = None,
         ignore: Optional[List[str]] = None,
-        on_conflict: str = "fail",
+        on_conflict: str = "append",
     ):
         """Negotiate, upload and commit in one call.
 
