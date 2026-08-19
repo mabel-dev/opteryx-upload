@@ -23,14 +23,6 @@ pip install opteryx-upload
 The CLI and the TUI come with it — argparse and curses, both standard library.
 Nothing here pulls a terminal framework into your dependency tree.
 
-```bash
-pip install "opteryx-upload[zstd]"
-```
-
-The `zstd` extra adds a denser, faster codec for the v1 flow, selected
-automatically when it is installed. gzip is used otherwise, from the standard
-library.
-
 ## The command line
 
 ```bash
@@ -393,49 +385,13 @@ This uses `POST {auth_url}/token` with `grant_type=client_credentials` (default
 A plain string works too, but a bearer JWT lives about five minutes and an
 upload can take longer than that.
 
-## The v1 session flow
+## The session flow
 
-`UploadClient` is the older interface and still works: open a session, stage
-parts, inspect them, commit. It infers types from the data and reports what it
-found at inspect, which is after the upload rather than before it.
-
-```python
-from opteryx_upload import ConflictResolution, Target, UploadClient
-
-client = UploadClient(token="<jwt>")
-
-session = client.create_session()
-session.upload_file("findings.parquet")
-session.upload_file("more_findings.csv")
-
-result = session.inspect()
-if result.has_issues:
-    raise SystemExit(result.issues)
-
-commit = session.commit(
-    Target("acme", "security", "findings"),
-    snapshot_message="Initial load",
-    conflict_resolution=ConflictResolution.APPEND,
-)
-```
-
-`client.upload_and_commit([...], Target(...))` does it in one call.
-
-Notes specific to this flow:
-
-- CSV and NDJSON files larger than the part size limit are split automatically
-  (CSV chunks repeat the header). Parquet is binary and cannot be split by byte
-  offset — write multiple smaller files upstream if a single export is too large.
-- CSV and NDJSON parts are compressed before upload and sent with
-  `Content-Encoding`. This matters more than bandwidth: the 30MB part limit
-  applies to the *compressed* bytes, so a 55MB NDJSON export goes from two parts
-  to one at ~7x. Parquet is never compressed — it already is, internally.
-- `ConflictResolution.FAIL` (the default here) rejects a commit if the dataset
-  exists; `APPEND` adds rows; `OVERWRITE` replaces them.
-
-The contract flow defaults to appending instead. Refusing an upload because its
-destination exists is safe and unhelpful: the caller named it on purpose, and
-the useful question is whether the rows are added or replace what is there.
+`UploadClient` and the `/v1/upload` endpoints still work, so nothing that uses
+them breaks. They are no longer documented and no longer where new work should
+start: they infer types from the data and report what they found at inspect,
+which is after the upload rather than before it. See the git history of this
+file for the version that described them.
 
 ## Notes
 
