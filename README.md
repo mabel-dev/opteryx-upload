@@ -1,6 +1,18 @@
 # opteryx-upload
 
-Python client SDK for the [Opteryx Upload Service](https://github.com/mabel-dev/upload.opteryx).
+Client for the [Opteryx Upload Service](https://github.com/mabel-dev/upload.opteryx):
+a Python SDK, a command line, and a full-screen terminal app.
+
+All three do the same four things in the same order, because a difference
+between them is a place where the thing you tested by hand is not the thing CI
+does. **Negotiate** — send a few megabytes of sample and agree what the data
+will become. **Look** at the plan. **Accept** it. Then **upload and commit**.
+
+Nothing is sent until that is settled, so an upload that was going to be refused
+is refused for the price of a sample rather than after four gigabytes. And an
+inferred type is never accepted without somebody saying so: a CSV cannot say
+that a column of dotted quads is an address, and once it is catalogued as
+VARCHAR no amount of reading the data back will tell you it was wrong.
 
 ## Install
 
@@ -8,21 +20,23 @@ Python client SDK for the [Opteryx Upload Service](https://github.com/mabel-dev/
 pip install opteryx-upload
 ```
 
-Parts are compressed before upload. gzip comes from the standard library, so that
-works out of the box; installing the `zstd` extra adds a denser and faster codec,
-which the SDK then selects automatically:
+The CLI and the TUI come with it — argparse and curses, both standard library.
+Nothing here pulls a terminal framework into your dependency tree.
 
 ```bash
 pip install "opteryx-upload[zstd]"
 ```
 
+The `zstd` extra adds a denser, faster codec for the v1 flow, selected
+automatically when it is installed. gzip is used otherwise, from the standard
+library.
+
 ## The command line
 
-Installing the package puts `opteryx-upload` on your PATH.
-
 ```bash
-export OPTERYX_CLIENT_ID="<client id>"
-export OPTERYX_CLIENT_SECRET="<pat secret>"
+export OPTERYX_CLIENT_ID="<access token username>"
+export OPTERYX_CLIENT_SECRET="<access token>"
+
 opteryx-upload push findings.csv --to acme.security.findings
 ```
 
@@ -30,7 +44,7 @@ You are not asked where the schema comes from, because the destination answers
 it. A dataset that already declares its columns supplies them, and the only
 question left is whether these rows are added or replace what is there. A
 dataset that does not exist yet has its types read from your data and shows them
-to you before anything is written:
+to you first:
 
 ```
   findings.csv  686.5 KB
@@ -48,16 +62,19 @@ to you before anything is written:
   > published=TIMESTAMP source_ip=IPV4
 ```
 
-Nothing is uploaded until that is settled. `published` and `source_ip` are the
-reason: a CSV cannot say that a column of dotted quads is an address, and once
-it is catalogued as VARCHAR no amount of reading the data back will tell you it
-was wrong.
+The sampled value next to each column is the point of that table: `published`
+sitting next to `2026-08-02T04:22:07Z` reads as wrong at a glance in a way that
+`published: VARCHAR` does not.
+
+Appending to a dataset that already exists asks nothing at all — it uses the
+types the catalog holds, converts your columns to match, and tells you which
+conversions it will make.
 
 ### In a pipeline
 
 There is no terminal to show the table to, so inference has to be authorised in
-advance - `--yes` accepts what was read from the data, and `--declare` says the
-types outright. A `push` with neither is refused rather than guessed at.
+advance. `--yes` accepts what was read from the data; `--declare` says the types
+outright. A `push` with neither is refused rather than guessed at.
 
 ```bash
 opteryx-upload push data/*.parquet --to acme.security.findings \
@@ -65,25 +82,40 @@ opteryx-upload push data/*.parquet --to acme.security.findings \
     --message "nightly load" --yes
 ```
 
-`plan` does the same negotiation, prints the table and abandons the contract, so
+`plan` runs the same negotiation, prints the table and abandons the contract, so
 it uploads nothing and leaves nothing behind:
 
 ```bash
 opteryx-upload plan data/*.parquet --to acme.security.findings --json
 ```
 
-Exit codes are part of the interface, because a pipeline that has to grep stderr
-will eventually retry the wrong thing:
+### Exit codes
+
+Part of the interface: a pipeline that has to grep stderr will eventually retry
+the wrong thing.
 
 | code | meaning | retrying |
 |---|---|---|
-| 0 | committed | - |
+| 0 | committed | — |
 | 2 | bad arguments, missing file, no credentials | no |
-| 3 | the service refused it: a value that will not cast, files that disagree | no |
+| 3 | refused: a value that will not cast, files that disagree, a column the dataset does not declare | no |
 | 4 | the target moved after the contract was agreed | yes |
 | 5 | not signed in, or not permitted to write here | no |
-| 6 | the service could not be reached | yes |
-| 130 | interrupted | - |
+| 6 | the service could not be reached, or failed | yes |
+| 130 | interrupted | — |
+
+3 and 6 are deliberately different numbers. Retrying a refusal never helps and
+retrying a broken service often does.
+
+### Commands
+
+| | |
+|---|---|
+| `push FILE... --to W.C.D` | negotiate, upload, commit |
+| `plan FILE... --to W.C.D` | negotiate and print; upload nothing |
+| `show CONTRACT_ID` | print a contract by id |
+| `abandon CONTRACT_ID` | give up on one |
+| `tui` | the full-screen version; also what bare `opteryx-upload` opens |
 
 ### Options
 
@@ -95,39 +127,48 @@ will eventually retry the wrong thing:
 | `--ignore COLUMN` | read this column and do not write it; repeatable |
 | `--infer` / `--use-dataset` / `--declare COLUMN:TYPE` | override the destination's answer |
 | `-y`, `--yes` | accept inferred types unasked; required off a terminal |
+| `-m`, `--message` | snapshot message |
 | `--json` | the contract as the service sent it |
+| `--no-color` | never colour the output |
 
 ### Credentials
 
-Set `OPTERYX_CLIENT_ID` to your access token username and `OPTERYX_CLIENT_SECRET`
-to the access token. `OPTERYX_TOKEN` takes a bearer JWT instead; an access token
-in the environment wins over one, and `--token` wins over both.
+Set `OPTERYX_CLIENT_ID` to your access token username and
+`OPTERYX_CLIENT_SECRET` to the access token. It is exchanged for a short-lived
+assertion and re-exchanged as that ages, which is what lets an upload measured
+in gigabytes finish.
+
+`OPTERYX_TOKEN` takes a bearer JWT instead, for a caller that already holds a
+valid one. An access token in the environment wins over it, and `--token` wins
+over both.
 
 The service comes from `OPTERYX_UPLOAD_URL` and the authenticate service from
 `OPTERYX_AUTH_URL`. Each has a flag if you would rather pass it.
 
 ## The full-screen version
 
-Run it with no arguments at a terminal and this is what you get - typing the
+```bash
+opteryx-upload                 # or: opteryx-upload tui findings.csv --to acme.security.findings
+```
+
+Run it with no arguments at a terminal and this is what you get — typing the
 name and nothing else means you want to upload something, not to read a list of
 subcommands. Off a terminal, no arguments prints the usage instead.
 
-```bash
-opteryx-upload                                             # a is add, t is target
-opteryx-upload tui findings.csv --to acme.security.findings  # or start it filled in
-```
-
-Same contract, same calls - what it adds is that the table stays put. At a
-scrolling prompt the plan goes past once and correcting a type means retyping
-the whole command; here the cursor moves down it and `e` changes the type of the
-row under the cursor.
+Same contract, same calls. What it adds is that the plan stays put: at a
+scrolling prompt the table goes past once and correcting a type means retyping
+the whole command, and here the cursor moves down it and `e` changes the type of
+the row under the cursor.
 
 ```
- opteryx upload                                              http://upload.opteryx.app
+ opteryx upload                                        https://upload.opteryx.app
 
  FILES
-   findings.csv       686.5 KB
-   findings_more.csv  457.7 KB
+   part-0000.parquet  412.9 MB
+   part-0001.parquet  398.1 MB
+
+ ACCOUNT
+   acme-etl
 
  TO
    acme.security.findings
@@ -141,18 +182,33 @@ row under the cursor.
    score      0.5                   FLOAT64         read and not written
 
  these types were read from your data - nothing is written until you accept
- ↑↓ column  e retype  x ignore  ⏎ accept  u upload  r re-plan  q quit
+ ↑↓ column  e retype  x ignore  ⏎ accept  u upload  h keys  q quit
 ```
 
-`h` lists every key. `c` signs in, `a` adds files, `t` sets the destination,
-`n` negotiates, `x` drops a column, `u` uploads and commits.
+`h` lists every key. `c` signs in, `a` browses for files, `t` sets the
+destination, `n` negotiates, `x` drops a column, `u` uploads and commits.
 
-`a` opens a file browser:
+Requests run on a worker thread and the screen keeps redrawing while they do, so
+a multi-gigabyte write shows a byte counter rather than a frozen terminal.
+Quitting with a contract still open abandons it — nothing written was ever
+readable, so there is nothing to undo.
+
+### Signing in
+
+Starting with no credentials opens the screen rather than refusing. `c` asks for
+your access token username, then the access token, which is masked as you type.
+It exchanges them straight away, so a mistyped token is a line on the status bar
+rather than a 401 half way through negotiating. It never asks for a bearer JWT.
+Neither is written anywhere; set them in the environment to skip the prompt.
+
+### Choosing files
+
+`a` opens a browser:
 
 ```
  ADD FILES  ~/exports/2026-08
-    ..
- ›  part-0000.parquet   412.9 MB
+ ›  ..
+    part-0000.parquet   412.9 MB
   ✓ part-0001.parquet   398.1 MB
   ✓ part-0002.parquet   401.7 MB
     SHA256SUMS               64 B
@@ -162,224 +218,231 @@ row under the cursor.
 ```
 
 The cursor always starts on the top row, so a sequence of keys means the same
-thing in every directory. Space tags, `a` tags every readable file in the
-directory, and tagging survives
-walking into another one, so an upload can gather from several places. Files the
-service cannot read are listed and dimmed rather than hidden - an empty
-directory is the one answer that sends you looking in the wrong place. Anything
-already on the upload list shows as tagged and is not offered twice.
+thing in every directory. Space tags, `a` tags every readable file here, and
+tagging survives walking into another directory — one upload can gather from
+several. Files the service cannot read are listed and dimmed rather than hidden;
+an empty directory is the one answer that sends you looking in the wrong place.
+Anything already on the list shows as tagged and is not offered twice.
 
-`g` types a path, a folder or a glob instead, which is still the fastest way in
-when the path is already on your clipboard.
+`g` types a path, a folder or a glob instead — still the fastest way in when the
+path is already on your clipboard, and the only way to say `**/*.parquet`.
 
-Both front ends use the Alucard palette, defined once in
-`opteryx_upload/cli/render.py`. Truecolor when the terminal advertises it, the
-nearest xterm-256 index when it does not, and the basic eight underneath that.
-`NO_COLOR` turns it all off.
+Colours are the Alucard palette, defined once in `opteryx_upload/cli/render.py`
+and read by the printed output too. Truecolor when the terminal advertises it,
+the nearest xterm-256 index when it does not. `NO_COLOR` turns it all off.
 
-Starting it with no credentials opens the screen rather than refusing: press `c`
-and it asks for your access token username, then the access token, which is
-masked as you type. It exchanges them straight away, so a mistyped token is a
-line on the status bar rather than a 401 half way through negotiating. It never
-asks for a bearer JWT. Neither is written anywhere - they are held for the
-session; set them in the environment to skip the prompt. Requests run on a worker thread and the screen keeps
-redrawing while they do, so a multi-gigabyte write shows a byte counter rather
-than a frozen terminal. Quitting with a contract still open abandons it - nothing
-written was ever readable, so there is nothing to undo.
+The TUI needs `curses`, which is in the standard library everywhere except
+Windows; there, `pip install windows-curses`, or use `push`.
 
-It needs `curses`, which is in the standard library everywhere except Windows;
-there, `pip install windows-curses`, or use `push`.
-
-## Usage
+## The Python SDK
 
 ```python
-from opteryx_upload import UploadClient, Target, ConflictResolution
+from opteryx_upload import ContractClient, PATAuthenticator, Schema, Target
 
-client = UploadClient(token="<jwt>")  # or token=lambda: fetch_fresh_token()
+client = ContractClient(
+    token=PATAuthenticator(client_id="<username>", client_secret="<access token>"),
+)
+
+contract = client.negotiate(
+    Target("acme", "security", "findings"),
+    ["findings.parquet", "more_findings.parquet"],
+    Schema.auto(),
+)
+
+for entry in contract.plan:
+    print(entry)          # source_ip: VARCHAR -> IPV4 (cast)
+
+if contract.blocking:
+    raise SystemExit(contract.issues)
+
+if contract.state == "proposed":
+    contract.accept()
+
+contract.write_all(["findings.parquet", "more_findings.parquet"])
+result = contract.commit(message="nightly load")
+print(result.table, result.commit_id, result.rows_written)
+```
+
+Negotiating uploads nothing. Each file is sampled locally — a prefix for text,
+the *footer* for parquet, which is where its schema lives — so it costs
+megabytes whatever the files weigh. Every file is sampled, not just the first:
+one contract covers all of them, so two that disagree are caught here rather
+than at commit.
+
+### Where the schema comes from
+
+There is no default. Omitting it is a `TypeError` at the call site, not a quiet
+inference.
+
+```python
+Schema.auto()                  # work it out from the destination
+Schema.inferred()              # read the types from the data, and show me first
+Schema.of_dataset("append")    # use the types the dataset already declares
+Schema.declared({"source_ip": "IPV4", "published": "TIMESTAMP[us]"})
+```
+
+`auto` is not a fourth source of types; it asks the service to look up something
+it already knows, and the contract that comes back names the mode it resolved
+to. A dataset that declares its columns has nothing to infer, and one that does
+not exist has nothing to read.
+
+`of_dataset("overwrite")` replaces the rows the dataset resolves to and leaves
+its definition exactly as the catalog holds it — a dataset defined as IPV4 is
+still IPV4 afterwards.
+
+### Reading the plan before accepting it
+
+A contract from `Schema.inferred()` arrives `proposed` and refuses writes until
+it is accepted, so a script that never looks at what was inferred fails loudly
+instead of cataloguing a guess.
+
+```python
+contract.values          # {"source_ip": "10.4.19.7"} - one real value per column
+contract.plan            # PlanEntry(column, from_, to, action)
+contract.issues          # Issue(code, column, detail, severity)
+contract.blocking        # True when something must be resolved first
+
+contract.retype(source_ip="IPV4", published="TIMESTAMP[us]")
+contract.ignore("score")     # read it, do not write it
+contract.accept()
+```
+
+`PlanEntry.action` is `keep`, `retag`, `widen`, `cast`, `unsupported`,
+`undeclared` or `ignored`. `entry.changes_values` is the distinction worth
+reading for: a column relabelled IPV4 and a column having every value multiplied
+by a thousand are both one line of a table, and only one of them is worth
+stopping for.
+
+An amended inference is a declaration — you looked at it and said what you
+wanted — so the contract returns to `proposed` and has to be accepted again.
+`accept()` echoes back the fingerprint you were shown, so a proposal that moved
+between being read and being accepted is refused rather than confirmed blind.
+
+### Everything at once
+
+```python
+client.load(
+    ["findings.parquet"],
+    Target("acme", "security", "findings"),
+    Schema.declared({"cve_id": "VARCHAR", "source_ip": "IPV4"}),
+    message="nightly load",
+)
+```
+
+`schema` is required here too. A load that chose its own types because nobody
+said otherwise is the thing this design exists to prevent, and making the
+convenience wrapper the exception would defeat it.
+
+### Errors
+
+One exception per error code, each carrying its fields, so a caller branches on
+a field rather than matching English in a message.
+
+```python
+from opteryx_upload import ContractStale, ValueNotCastable
+
+try:
+    contract.write("findings.parquet")
+except ValueNotCastable as error:
+    print(error.column, error.row, error.value, error.declared)
+except ContractStale as error:
+    print(error.diff, error.written_rows)   # re-negotiate; retrying works
+```
+
+`ValueNotCastable` is raised on the write that carries the bad value, naming the
+row — not at commit after everything has been sent. `ContractStale` means the
+target's definition moved after the contract was agreed; nothing was published,
+so the cost is work rather than a dataset somebody has read.
+
+`InternalError` carries `reference`, the id the service logged its traceback
+against. Others: `SchemaSourceRequired`, `ColumnUndeclared`, `ColumnMissing`,
+`SourcesDisagree`, `ContractNotAccepted`, `ProposalChanged`, `ContractExpired`,
+`AlreadyCommitted`, `DatasetExists`, `FormatUnreadable`, `NotAuthorized`,
+`ContractNotFound`.
+
+### Reattaching, and progress
+
+```python
+contract = client.contract("ct_20260819180247_b47d7241786f")
+contract.write("big.parquet", progress=lambda sent, total: print(sent, total))
+contract.commit(message="retry", idempotency_key="nightly-2026-08-19")
+```
+
+Commit is idempotent on `idempotency_key`: a retry after a lost response returns
+the original snapshot instead of writing a second one.
+
+## Authenticating with an access token
+
+`PATAuthenticator` exchanges an access token (a username and the token itself)
+for a short-lived assertion, caches it, and re-authenticates before it expires.
+Pass it straight through as `token=` — it is callable, and it is re-resolved per
+request.
+
+```python
+from opteryx_upload import ContractClient, PATAuthenticator
+
+auth = PATAuthenticator(client_id="<username>", client_secret="<access token>")
+client = ContractClient(token=auth)
+```
+
+This uses `POST {auth_url}/token` with `grant_type=client_credentials` (default
+`auth_url` is `https://authenticate.opteryx.app`), the same flow as the
+`opteryx-sqlalchemy` driver. If the API ever rejects a token as expired, call
+`auth.invalidate()` and retry to force a fresh exchange.
+
+A plain string works too, but a bearer JWT lives about five minutes and an
+upload can take longer than that.
+
+## The v1 session flow
+
+`UploadClient` is the older interface and still works: open a session, stage
+parts, inspect them, commit. It infers types from the data and reports what it
+found at inspect, which is after the upload rather than before it.
+
+```python
+from opteryx_upload import ConflictResolution, Target, UploadClient
+
+client = UploadClient(token="<jwt>")
 
 session = client.create_session()
 session.upload_file("findings.parquet")
-session.upload_file("more_findings.csv")  # compressed, and auto-split if still too big
+session.upload_file("more_findings.csv")
 
 result = session.inspect()
 if result.has_issues:
     raise SystemExit(result.issues)
 
 commit = session.commit(
-    Target(workspace="acme", collection="security", dataset="findings"),
+    Target("acme", "security", "findings"),
     snapshot_message="Initial load",
     conflict_resolution=ConflictResolution.APPEND,
 )
-print(commit.table, commit.commit_id, commit.rows_written)
 ```
 
-Or in one call:
+`client.upload_and_commit([...], Target(...))` does it in one call.
 
-```python
-client.upload_and_commit(
-    ["findings.parquet"],
-    Target("acme", "security", "findings"),
-    snapshot_message="Initial load",
-)
-```
+Notes specific to this flow:
 
-## Authenticating with an access token
+- CSV and NDJSON files larger than the part size limit are split automatically
+  (CSV chunks repeat the header). Parquet is binary and cannot be split by byte
+  offset — write multiple smaller files upstream if a single export is too large.
+- CSV and NDJSON parts are compressed before upload and sent with
+  `Content-Encoding`. This matters more than bandwidth: the 30MB part limit
+  applies to the *compressed* bytes, so a 55MB NDJSON export goes from two parts
+  to one at ~7x. Parquet is never compressed — it already is, internally.
+- `ConflictResolution.FAIL` (the default here) rejects a commit if the dataset
+  exists; `APPEND` adds rows; `OVERWRITE` replaces them.
 
-If you have an access token (a username + the token itself) instead of a
-ready-made JWT, use `PATAuthenticator` to exchange it for a short-lived
-assertion. It caches the
-token and transparently re-authenticates before it expires, so you can pass it
-straight through as `token=`:
-
-```python
-from opteryx_upload import UploadClient, PATAuthenticator
-
-auth = PATAuthenticator(client_id="<username>", client_secret="<access token>")
-client = UploadClient(token=auth)
-```
-
-This exchanges the access token via `POST {auth_url}/token` with `grant_type=client_credentials`
-(default `auth_url` is `https://authenticate.opteryx.app`), the same flow used by
-the `opteryx-sqlalchemy` driver. If the API ever rejects a token as expired/invalid,
-call `auth.invalidate()` and retry to force a fresh exchange.
-
-## Examples
-
-Each `UploadSession` maps directly onto the service's REST flow: create a session,
-stage one or more parts, inspect them, then commit. See the
-[service README](https://github.com/mabel-dev/upload.opteryx#flow) for the underlying
-HTTP API these calls wrap.
-
-### End-to-end: upload and commit a dataset
-
-```python
-from opteryx_upload import UploadClient, Target, ConflictResolution
-
-client = UploadClient(token="<jwt>")
-
-session = client.create_session()
-print(session.info.session_id, session.info.expires_at)  # sessions expire after 6 hours
-
-session.upload_file("findings.parquet")
-session.upload_file("more_findings.parquet")
-
-result = session.inspect()
-print(result.rows_estimate, result.schema)
-if result.has_issues:
-    for issue in result.issues:
-        print(f"part {issue.part}: {issue.issue}")
-    raise SystemExit("fix the reported issues before committing")
-
-commit = session.commit(
-    Target(workspace="acme", collection="security", dataset="findings"),
-    snapshot_message="Initial load of findings",
-    conflict_resolution=ConflictResolution.FAIL,  # default: error if the dataset already exists
-)
-print(f"committed {commit.rows_written} rows across {commit.files_created} files as {commit.commit_id}")
-```
-
-### Choosing a conflict resolution strategy
-
-- `ConflictResolution.FAIL` (default) — reject the commit if the dataset already exists.
-- `ConflictResolution.APPEND` — add the new rows to the existing dataset (schemas must match).
-- `ConflictResolution.OVERWRITE` — replace the existing dataset's contents entirely.
-
-```python
-session.commit(
-    Target("acme", "security", "findings"),
-    conflict_resolution=ConflictResolution.OVERWRITE,
-)
-```
-
-### Uploading many files, then deciding what to commit
-
-Parts can be staged incrementally (e.g. from multiple upload jobs) before a single
-commit, and a bad part can be removed before it's committed:
-
-```python
-session = client.create_session()
-part_numbers = []
-for path in ("2026-01.parquet", "2026-02.parquet", "2026-03.parquet"):
-    part_numbers += session.upload_file(path)
-
-result = session.inspect()
-if result.has_issues:
-    bad_part = result.issues[0].part
-    session.delete_part(bad_part)
-    result = session.inspect()
-
-session.commit(Target("acme", "security", "findings"))
-```
-
-### Handling errors
-
-```python
-from opteryx_upload import (
-    UploadClient,
-    ConflictError,
-    SessionExpiredError,
-    UnprocessableEntityError,
-)
-
-client = UploadClient(token="<jwt>")
-session = client.create_session()
-
-try:
-    session.upload_file("findings.csv")
-    session.commit(Target("acme", "security", "findings"))
-except UnprocessableEntityError as exc:
-    print(f"file rejected: {exc}")
-except ConflictError as exc:
-    print(f"commit conflict, consider ConflictResolution.APPEND/OVERWRITE: {exc}")
-except SessionExpiredError:
-    session = client.create_session()  # start over with a fresh session
-```
-
-### One-shot upload
-
-For simple jobs where you just want to push files straight into a table:
-
-```python
-client.upload_and_commit(
-    ["findings.parquet"],
-    Target("acme", "security", "findings"),
-    snapshot_message="Initial load",
-)
-```
-
-### Authenticating with an access token end-to-end
-
-```python
-from opteryx_upload import UploadClient, PATAuthenticator, Target
-
-client = UploadClient(
-    token=PATAuthenticator(client_id="acme-etl", client_secret="opt_XXXXXXXX_01"),
-)
-client.upload_and_commit(["findings.parquet"], Target("acme", "security", "findings"))
-```
+The contract flow defaults to appending instead. Refusing an upload because its
+destination exists is safe and unhelpful: the caller named it on purpose, and
+the useful question is whether the rows are added or replace what is there.
 
 ## Notes
 
-- Files are auto-typed from their extension (`.parquet`, `.csv`, `.ndjson`/`.jsonl`).
-- CSV and NDJSON files larger than the part size limit are automatically split into
-  multiple parts (CSV chunks repeat the header row). Parquet is a binary format and
-  cannot be split this way — write multiple smaller parquet files and upload each as
-  a separate part if a single export is too large.
-- CSV and NDJSON parts are compressed before upload and sent with `Content-Encoding`.
-  `compression="auto"` (the default) uses zstd when `zstandard` is installed and gzip
-  otherwise; pass `"gzip"`, `"zstd"` or `None` to choose explicitly. Parquet is never
-  compressed — it already is, internally.
-
-  This matters more than bandwidth: the server's 30MB part limit applies to the
-  *compressed* bytes, so a compressed part carries far more rows and a large file
-  needs far fewer parts. A 55MB NDJSON export goes from 2 parts to 1 at ~7x. Parts
-  are also bounded by `max_source_bytes` (default 190MB), because the server decodes
-  at most 200MB per part.
-- Errors map to typed exceptions (`AuthenticationError`, `SessionExpiredError`,
-  `ConflictError`, `UnprocessableEntityError`, etc.) so callers can catch specific
-  failure modes instead of parsing HTTP status codes.
-- `token` may be a plain string or a zero-arg callable, so short-lived JWTs can be
-  refreshed transparently between requests.
+- Files are typed from their extension: `.parquet`/`.pq`, `.csv`,
+  `.ndjson`/`.jsonl`. Anything else is refused by name rather than guessed at.
+- `token` may be a string or a zero-arg callable, resolved per request, so a
+  short-lived assertion can be refreshed transparently between calls.
 
 ## Development
 
