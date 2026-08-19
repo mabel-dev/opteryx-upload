@@ -147,10 +147,28 @@ row under the cursor.
 `h` lists every key. `c` signs in, `a` adds files, `t` sets the destination,
 `n` negotiates, `x` drops a column, `u` uploads and commits.
 
-`a` takes a path, a folder, or a glob - `data/*.parquet`, or the folder itself.
-A glob or a folder only picks up files the service can read, so `data/*` does
-not drag a README and a checksums file into the upload, and adding the same
-pattern twice does not double the list.
+`a` opens a file browser:
+
+```
+ ADD FILES  ~/exports/2026-08
+    ..
+ ›  part-0000.parquet   412.9 MB
+  ✓ part-0001.parquet   398.1 MB
+  ✓ part-0002.parquet   401.7 MB
+    SHA256SUMS               64 B
+
+ 2 to add
+ ↑↓ move  ⏎ open  ← up  space tag  a all here  g type a path  . hidden  esc back
+```
+
+Space tags, `a` tags every readable file in the directory, and tagging survives
+walking into another one, so an upload can gather from several places. Files the
+service cannot read are listed and dimmed rather than hidden - an empty
+directory is the one answer that sends you looking in the wrong place. Anything
+already on the upload list shows as tagged and is not offered twice.
+
+`g` types a path, a folder or a glob instead, which is still the fastest way in
+when the path is already on your clipboard.
 
 Starting it with no credentials opens the screen rather than refusing: press `c`
 and it asks for your access token username, then the access token, which is

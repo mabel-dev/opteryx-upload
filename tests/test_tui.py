@@ -418,6 +418,137 @@ class TestRepainting:
         assert tui._layout_signature(app) != signed_out
 
 
+class TestBrowser:
+    """Typing a path is the fastest way in when you know it, and the worst when
+    you do not - which is most of the time."""
+
+    def tree(self, tmp_path):
+        (tmp_path / "2026-08").mkdir()
+        (tmp_path / "archive").mkdir()
+        for name in ("part-0000.csv", "part-0001.csv"):
+            (tmp_path / "2026-08" / name).write_text("a,b\n1,2\n")
+        (tmp_path / "2026-08" / "SHA256SUMS").write_text("x")
+        (tmp_path / ".hidden.csv").write_text("a,b\n1,2\n")
+        return tmp_path
+
+    def test_directories_come_before_files_and_the_way_out_comes_first(self, tmp_path):
+        browser = tui.Browser(str(self.tree(tmp_path)))
+        kinds = [kind for _n, _f, kind in browser.entries]
+        assert kinds[0] == tui.UP
+        assert kinds.count(tui.DIR) == 2
+        assert kinds.index(tui.DIR) < len(kinds) - 1
+
+    def test_it_opens_on_something_worth_choosing_not_on_the_way_out(self, tmp_path):
+        # Arriving with the cursor on `..` is how every keystroke in a
+        # directory starts with pressing down.
+        browser = tui.Browser(str(self.tree(tmp_path) / "2026-08"))
+        assert browser.current[2] == tui.FILE
+
+    def test_a_file_it_cannot_read_is_listed_and_cannot_be_tagged(self, tmp_path):
+        # Hiding it answers "where is my data" with an empty directory.
+        browser = tui.Browser(str(self.tree(tmp_path) / "2026-08"))
+        sums = [e for e in browser.entries if e[0] == "SHA256SUMS"]
+        assert sums and sums[0][2] == tui.OTHER
+        browser.cursor = browser.entries.index(sums[0])
+        browser.toggle()
+        assert browser.tagged == []
+
+    def test_space_on_a_directory_does_not_navigate(self, tmp_path):
+        # Otherwise the key that gathers things up is also the key that moves
+        # you somewhere else, and on `..` it throws away where you are.
+        browser = tui.Browser(str(self.tree(tmp_path)))
+        browser.cursor = 0  # ..
+        here = browser.path
+        browser.toggle()
+        assert browser.path == here
+        assert browser.tagged == []
+
+    def test_tagging_survives_walking_into_another_directory(self, tmp_path):
+        root = self.tree(tmp_path)
+        browser = tui.Browser(str(root / "2026-08"))
+        browser.toggle()
+        assert len(browser.tagged) == 1
+        browser.up()
+        assert len(browser.tagged) == 1
+
+    def test_going_up_lands_on_the_directory_you_left(self, tmp_path):
+        root = self.tree(tmp_path)
+        browser = tui.Browser(str(root / "2026-08"))
+        browser.up()
+        assert browser.current[0].rstrip("/\\") == "2026-08"
+
+    def test_a_tags_every_readable_file_here_and_nothing_else(self, tmp_path):
+        browser = tui.Browser(str(self.tree(tmp_path) / "2026-08"))
+        browser.tag_all()
+        assert sorted(os.path.basename(p) for p in browser.tagged) == [
+            "part-0000.csv",
+            "part-0001.csv",
+        ]
+
+    def test_a_again_untags_them(self, tmp_path):
+        browser = tui.Browser(str(self.tree(tmp_path) / "2026-08"))
+        browser.tag_all()
+        browser.tag_all()
+        assert browser.tagged == []
+
+    def test_what_is_already_on_the_list_is_not_offered_twice(self, tmp_path):
+        root = self.tree(tmp_path)
+        already = str(root / "2026-08" / "part-0000.csv")
+        browser = tui.Browser(str(root / "2026-08"), already=[already])
+        browser.tag_all()
+        assert already not in browser.tagged
+        assert len(browser.tagged) == 1
+
+    def test_nothing_tagged_means_the_row_under_the_cursor(self, tmp_path):
+        browser = tui.Browser(str(self.tree(tmp_path) / "2026-08"))
+        assert len(browser.chosen()) == 1
+        assert browser.chosen()[0].endswith("part-0000.csv")
+
+    def test_hidden_files_are_out_until_you_ask(self, tmp_path):
+        browser = tui.Browser(str(self.tree(tmp_path)))
+        listed = [name for name, _f, kind in browser.entries if kind != tui.UP]
+        assert not any(name.startswith(".") for name in listed)
+        browser.show_hidden = True
+        browser.scan()
+        assert any(name == ".hidden.csv" for name, _f, _k in browser.entries)
+
+    def test_a_directory_it_cannot_read_says_so_rather_than_looking_empty(self, tmp_path):
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0o000)
+        try:
+            browser = tui.Browser(str(locked))
+            assert browser.error
+        finally:
+            locked.chmod(0o755)
+
+    def test_escape_adds_nothing(self):
+        app, _ = app_with(files=())
+        app.browser = tui.Browser(".")
+        tui.browse(app, 27, window=None, curses_module=curses)
+        assert app.browser is None
+        assert app.files == []
+
+    def test_confirming_adds_what_was_tagged(self, tmp_path):
+        root = self.tree(tmp_path)
+        app, _ = app_with(files=())
+        app.browser = tui.Browser(str(root / "2026-08"))
+        app.browser.tag_all()
+        tui.browse(app, 10, window=None, curses_module=curses)
+        assert app.browser is None
+        assert len(app.files) == 2
+        assert "added 2 files" in app.status
+
+    def test_enter_on_a_directory_descends_rather_than_confirming(self, tmp_path):
+        root = self.tree(tmp_path)
+        app, _ = app_with(files=())
+        app.browser = tui.Browser(str(root))
+        app.browser.cursor = [e[2] for e in app.browser.entries].index(tui.DIR)
+        tui.browse(app, 10, window=None, curses_module=curses)
+        assert app.browser is not None
+        assert app.files == []
+
+
 class TestClosingUp:
     def test_an_open_contract_is_abandoned_on_the_way_out(self):
         contract = FakeContract(state="accepted")

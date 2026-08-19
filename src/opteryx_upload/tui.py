@@ -23,6 +23,7 @@ import os
 import threading
 from typing import Any
 from typing import Callable
+from typing import Iterable
 from typing import List
 from typing import Optional
 from typing import Tuple
@@ -129,6 +130,8 @@ class App:
         self._signing_in: Optional[str] = None
         #: Whether the key list is covering the screen.
         self.help = False
+        #: The file browser, when it is up. Covers the screen like the help.
+        self.browser = None
         #: The layout the last frame was drawn for, so a shift can force a full
         #: repaint instead of a difference.
         self.drawn_signature = None
@@ -374,6 +377,7 @@ def _layout_signature(app: App):
         len(app.plan),
         len(app.contract.issues) if app.contract is not None else 0,
         app.help,
+        app.browser is not None,
     )
 
 
@@ -391,6 +395,12 @@ def draw(app: App, window, curses_module, colour: bool) -> None:
 
     if app.help:
         _draw_help(screen)
+        window.noutrefresh()
+        curses_module.doupdate()
+        return
+
+    if app.browser is not None:
+        _draw_browser(app, screen)
         window.noutrefresh()
         curses_module.doupdate()
         return
@@ -479,7 +489,7 @@ def draw(app: App, window, curses_module, colour: bool) -> None:
 HELP_KEYS = [
     ("", "GETTING READY"),
     ("c", "sign in with an access token"),
-    ("a", "add files - a path, a folder, or a glob like data/*.parquet"),
+    ("a", "browse for files; g in there types a path or a glob instead"),
     ("d", "remove the file under the cursor"),
     ("t", "set the destination, workspace.collection.dataset"),
     ("n", "negotiate: agree what the data will become, sending no data"),
@@ -628,6 +638,9 @@ def handle(app: App, key: int, window, curses_module) -> None:
         # have to find the exit of is its own small joke.
         app.help = False
         return
+    if app.browser is not None:
+        browse(app, key, window, curses_module)
+        return
     if key in (ord("h"), ord("?"), curses_module.KEY_F1):
         app.help = True
         return
@@ -641,9 +654,10 @@ def handle(app: App, key: int, window, curses_module) -> None:
     elif key in (curses_module.KEY_UP, ord("k")):
         app.cursor = max(app.cursor - 1, 0)
     elif key == ord("a"):
-        answer = prompt(window, curses_module, "file, folder or glob:")
-        if answer:
-            add_files(app, answer)
+        # Start where the last file came from, so adding a second export from
+        # the same place is two keys rather than a walk back down.
+        start = os.path.dirname(app.files[-1]) if app.files else os.getcwd()
+        app.browser = Browser(start, app.files)
     elif key == ord("d") and app.contract is None and app.files:
         app.files.pop(min(app.cursor, len(app.files) - 1))
         app.cursor = min(app.cursor, max(len(app.files) - 1, 0))
@@ -813,3 +827,270 @@ def _loop(window, app: App, curses_module) -> None:
         if key == curses_module.KEY_RESIZE:
             continue
         handle(app, key, window, curses_module)
+
+
+# ---------------------------------------------------------------------------
+# Choosing files
+# ---------------------------------------------------------------------------
+#
+# Typing a path is the fastest way in when you already know it and the worst
+# when you do not, which is most of the time: an export lives four directories
+# down under a name nobody remembers, and a prompt cannot tell you that the
+# thing you typed is a directory with thirty-one parquet files in it.
+#
+# One pane, not two. A commander has two because it moves things between them;
+# here there is one destination and it is not a directory, so the second pane
+# would show the upload list, which is already on the screen behind this.
+
+UP = "up"
+DIR = "dir"
+FILE = "file"
+OTHER = "other"
+
+
+class Browser:
+    """A directory, what is in it, and what has been tagged."""
+
+    def __init__(self, start: str, already: Iterable[str] = ()) -> None:
+        self.path = os.path.abspath(os.path.expanduser(start or "."))
+        self.tagged: List[str] = []
+        #: Already on the upload list. Shown as tagged and not counted again, so
+        #: walking back into a directory does not offer you the same file twice.
+        self.already = {os.path.abspath(path) for path in already}
+        self.cursor = 0
+        self.show_hidden = False
+        self.error = ""
+        self.entries: List[Tuple[str, str, str]] = []
+        self.scan()
+        self._rest_somewhere_useful()
+
+    def scan(self) -> None:
+        """Read the directory: parents first, then directories, then files.
+
+        A file the service cannot read is listed and not selectable rather than
+        hidden. Hiding it answers "where is my data" with an empty directory,
+        which is the one answer that sends somebody looking in the wrong place.
+        """
+        entries: List[Tuple[str, str, str]] = []
+        parent = os.path.dirname(self.path)
+        if parent and parent != self.path:
+            entries.append(("..", parent, UP))
+        try:
+            names = sorted(os.listdir(self.path), key=str.lower)
+            self.error = ""
+        except OSError as error:
+            names = []
+            self.error = f"{self.path}: {getattr(error, 'strerror', error)}"
+
+        directories, files = [], []
+        for name in names:
+            if name.startswith(".") and not self.show_hidden:
+                continue
+            full = os.path.join(self.path, name)
+            if os.path.isdir(full):
+                directories.append((name + os.sep, full, DIR))
+            elif os.path.isfile(full):
+                files.append((name, full, FILE if detect_kind(name) else OTHER))
+        self.entries = entries + directories + files
+        self.cursor = max(0, min(self.cursor, len(self.entries) - 1))
+
+    # ---- moving around ---------------------------------------------------
+
+    @property
+    def current(self) -> Optional[Tuple[str, str, str]]:
+        if not self.entries:
+            return None
+        return self.entries[min(self.cursor, len(self.entries) - 1)]
+
+    def move(self, delta: int) -> None:
+        if self.entries:
+            self.cursor = max(0, min(self.cursor + delta, len(self.entries) - 1))
+
+    def enter(self) -> None:
+        """Descend, or go up. Tagging survives it, so you can gather from several."""
+        entry = self.current
+        if entry is None or entry[2] not in (DIR, UP):
+            return
+        self.path = entry[1]
+        self.cursor = 0
+        self.scan()
+        self._rest_somewhere_useful()
+
+    def _rest_somewhere_useful(self) -> None:
+        """Land on the first thing worth choosing, not on `..`.
+
+        Arriving with the cursor on the way out is how every keystroke in a
+        directory starts with pressing down.
+        """
+        for index, (_name, _full, kind) in enumerate(self.entries):
+            if kind == FILE:
+                self.cursor = index
+                return
+        self.cursor = 1 if len(self.entries) > 1 else 0
+
+    def up(self) -> None:
+        parent = os.path.dirname(self.path)
+        if parent and parent != self.path:
+            here = self.path
+            self.path = parent
+            self.scan()
+            # Land on the directory just left, not at the top of a long list.
+            for index, (_name, full, kind) in enumerate(self.entries):
+                if kind == DIR and os.path.normpath(full) == os.path.normpath(here):
+                    self.cursor = index
+                    break
+
+    # ---- choosing --------------------------------------------------------
+
+    def toggle(self) -> None:
+        entry = self.current
+        if entry is None:
+            return
+        if entry[2] != FILE:
+            # Only files. Space on a directory navigating would mean the key
+            # that gathers things up is also the key that moves you somewhere
+            # else, and on `..` it would throw away where you are.
+            return
+        if entry[1] in self.already:
+            return
+        if entry[1] in self.tagged:
+            self.tagged.remove(entry[1])
+        else:
+            self.tagged.append(entry[1])
+        self.move(1)
+
+    def tag_all(self) -> None:
+        """Every readable file here. The reason a browser beats a prompt for an export."""
+        here = [full for _n, full, kind in self.entries if kind == FILE and full not in self.already]
+        if all(full in self.tagged for full in here) and here:
+            self.tagged = [full for full in self.tagged if full not in here]
+            return
+        for full in here:
+            if full not in self.tagged:
+                self.tagged.append(full)
+
+    def chosen(self) -> List[str]:
+        """What confirming would add: everything tagged, or whatever is under the cursor."""
+        if self.tagged:
+            return list(self.tagged)
+        entry = self.current
+        if entry is not None and entry[2] == FILE and entry[1] not in self.already:
+            return [entry[1]]
+        return []
+
+
+BROWSER_KEYS = (
+    "↑↓ move  ⏎ open  ← up  space tag  a all here  g type a path  . hidden  esc back"
+)
+
+
+def _draw_browser(app: App, screen: Screen) -> None:
+    browser = app.browser
+    screen.line(" ADD FILES", C_HEAD, bold=True)
+    # From the left, because the end of a path is the part that says where you
+    # are; the front is four directories everybody already knows.
+    room = screen.width - 14
+    shown = browser.path if len(browser.path) <= room else "…" + browser.path[-(room - 1):]
+    screen.span(0, 12, shown, C_DIM)
+    screen.line()
+
+    if browser.error:
+        screen.line(f"   {browser.error}", C_BAD)
+    if not browser.entries:
+        screen.line("   nothing here", C_DIM)
+
+    width = max([len(name) for name, _f, _k in browser.entries] + [10])
+    width = min(width, max(screen.width - 30, 20))
+    room = max(screen.height - screen.row - 3, 1)
+    # Keep the cursor on screen without jumping the whole list about: scroll
+    # only when it would otherwise leave.
+    first = 0
+    if len(browser.entries) > room:
+        first = max(0, min(browser.cursor - room // 2, len(browser.entries) - room))
+
+    for index in range(first, min(first + room, len(browser.entries))):
+        name, full, kind = browser.entries[index]
+        selected = index == browser.cursor
+        if kind == FILE:
+            mark = "✓" if (full in browser.tagged or full in browser.already) else " "
+        else:
+            mark = " "
+        size = ""
+        if kind in (FILE, OTHER):
+            try:
+                size = human_bytes(os.path.getsize(full))
+            except OSError:
+                size = "?"
+        cursor = "›" if selected else " "
+        text = f" {cursor}{mark} {truncate(name, width).ljust(width)}  {size.rjust(9)}"
+        if kind in (DIR, UP):
+            pair = C_HEAD
+        elif kind == OTHER:
+            pair = C_DIM  # listed so it is not missing, dim so it is not a choice
+        elif full in browser.already:
+            pair = C_DIM
+        else:
+            pair = C_OK if full in browser.tagged else 0
+        screen.line(text, C_SEL if selected else pair, bold=selected)
+
+    chosen = len(browser.chosen())
+    already = sum(1 for _n, full, kind in browser.entries
+                  if kind == FILE and full in browser.already)
+    status = f" {chosen} to add" if chosen else " nothing chosen"
+    if already:
+        status += f", {already} here already on the list"
+    screen.line(status, C_OK if chosen else C_DIM, row=screen.height - 2)
+    screen.line(f" {BROWSER_KEYS}", C_DIM, row=screen.height - 1)
+
+
+def browse(app: App, key: int, window, curses_module) -> None:
+    """Keys while the browser is up. Nothing here touches the network."""
+    browser = app.browser
+    if key == 27:  # escape
+        app.browser = None
+    elif key in (curses_module.KEY_DOWN, ord("j")):
+        browser.move(1)
+    elif key in (curses_module.KEY_UP, ord("k")):
+        browser.move(-1)
+    elif key == curses_module.KEY_NPAGE:
+        browser.move(10)
+    elif key == curses_module.KEY_PPAGE:
+        browser.move(-10)
+    elif key in (curses_module.KEY_LEFT, curses_module.KEY_BACKSPACE, 127, 8):
+        browser.up()
+    elif key == curses_module.KEY_RIGHT:
+        browser.enter()
+    elif key == ord(" "):
+        browser.toggle()
+    elif key == ord("a"):
+        browser.tag_all()
+    elif key == ord("."):
+        browser.show_hidden = not browser.show_hidden
+        browser.scan()
+    elif key == ord("g"):
+        # The typed route is still here. It is the fastest way in when the path
+        # is already on your clipboard, and the only way to say `**/*.parquet`.
+        app.browser = None
+        answer = prompt(window, curses_module, "file, folder or glob:")
+        if answer:
+            add_files(app, answer)
+    elif key in (10, 13, curses_module.KEY_ENTER):
+        entry = browser.current
+        if entry is not None and entry[2] in (DIR, UP) and not browser.tagged:
+            browser.enter()
+            return
+        chosen = browser.chosen()
+        if not chosen:
+            return
+        app.browser = None
+        _accept_files(app, chosen)
+
+
+def _accept_files(app: App, chosen: List[str]) -> None:
+    fresh = [path for path in chosen if path not in app.files]
+    app.files.extend(fresh)
+    app.error = ""
+    if len(fresh) == 1:
+        app.status = f"added {os.path.basename(fresh[0])}"
+    elif fresh:
+        app.status = f"added {len(fresh)} files"
