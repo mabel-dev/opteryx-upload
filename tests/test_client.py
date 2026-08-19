@@ -103,7 +103,8 @@ def test_inspect_no_content_returns_none(client):
         f"{BASE_URL}/v1/upload/sess-1/inspect",
         status=204,
     )
-    from datetime import datetime, timezone
+    from datetime import datetime
+    from datetime import timezone
 
     from opteryx_upload.client import UploadSession
     from opteryx_upload.models import SessionInfo
@@ -119,9 +120,11 @@ def test_inspect_no_content_returns_none(client):
 
 @responses.activate
 def test_error_mapping(client):
+    from datetime import datetime
+    from datetime import timezone
+
     from opteryx_upload.client import UploadSession
     from opteryx_upload.models import SessionInfo
-    from datetime import datetime, timezone
 
     responses.add(
         responses.POST,
@@ -141,9 +144,11 @@ def test_error_mapping(client):
 
 @responses.activate
 def test_session_expired_maps_to_410(client):
+    from datetime import datetime
+    from datetime import timezone
+
     from opteryx_upload.client import UploadSession
     from opteryx_upload.models import SessionInfo
-    from datetime import datetime, timezone
 
     responses.add(
         responses.GET,

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json as _json
 import os
+import os as _os
 import time
+from typing import TYPE_CHECKING
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -16,7 +19,9 @@ from .chunking import DEFAULT_MAX_SOURCE_BYTES
 from .chunking import detect_kind
 from .chunking import iter_upload_chunks
 from .compression import resolve as _resolve_compression
+from .exceptions import ContractError
 from .exceptions import UploadClientError
+from .exceptions import error_for_contract
 from .exceptions import error_for_response
 from .models import CommitResult
 from .models import ConflictResolution
@@ -25,7 +30,12 @@ from .models import PartAccepted
 from .models import SessionInfo
 from .models import Target
 
+if TYPE_CHECKING:  # imported for annotations only; both import this module
+    from .contract import Contract
+    from .schema import Schema
+
 DEFAULT_BASE_URL = "https://upload.opteryx.app"
+_DEFAULT_SAMPLE_BYTES = 4 * 1024 * 1024
 RETRIABLE_STATUS_CODES = {504}
 
 TokenLike = Union[str, Callable[[], str]]
@@ -316,3 +326,181 @@ class UploadClient:
         except ValueError:
             detail = response.text
         raise error_for_response(response.status_code, detail)
+
+
+# ---------------------------------------------------------------------------
+# v2: contracts
+#
+# The schema is settled before any data moves, so the question a caller most
+# wants answered - "what will my columns become?" - is answered for the price of
+# a few megabytes rather than an upload.
+# ---------------------------------------------------------------------------
+
+
+class ContractClient(UploadClient):
+    """Client for the contract flow.
+
+    `UploadClient` keeps its v1 methods and they still work. This subclass adds
+    the v2 surface; `UploadClient` will become this once v1 is retired.
+    """
+
+    def negotiate(
+        self,
+        target: "Target",
+        files: List[str],
+        schema: "Schema",
+        *,
+        ignore: Optional[List[str]] = None,
+        on_conflict: str = "fail",
+        sample_bytes: int = _DEFAULT_SAMPLE_BYTES,
+    ) -> "Contract":
+        """Agree what the data will become. Uploads nothing.
+
+        Each file is sampled locally - a prefix for text, the footer for parquet -
+        so this costs megabytes whatever the files weigh. Every file is sampled,
+        not just the first: one contract covers all of them, so two that disagree
+        have to be caught here rather than at commit.
+        """
+        from .contract import Contract
+        from .sampling import sample as _sample
+
+        if not files:
+            raise ValueError("negotiate needs at least one file")
+
+        body = {
+            "target": target.as_dict(),
+            "schema": schema.as_dict(),
+            "on_conflict": on_conflict,
+        }
+        if ignore:
+            body["ignore"] = list(ignore)
+
+        parts = [("contract", (None, _json.dumps(body), "application/json"))]
+        for path in files:
+            data, _kind = _sample(path, sample_bytes)
+            parts.append(("sample", (_os.path.basename(path), data, "application/octet-stream")))
+
+        return Contract(self, self._contract_request("POST", "/v2/contracts", files=parts))
+
+    def load(
+        self,
+        files: List[str],
+        target: "Target",
+        schema: "Schema",
+        *,
+        message: Optional[str] = None,
+        ignore: Optional[List[str]] = None,
+        on_conflict: str = "fail",
+    ):
+        """Negotiate, upload and commit in one call.
+
+        `schema` is required. A load that chose its own types because nobody said
+        otherwise is the thing this design exists to prevent, and making the
+        convenience wrapper the exception would defeat it.
+        """
+        contract = self.negotiate(
+            target, files, schema, ignore=ignore, on_conflict=on_conflict
+        )
+        if contract.blocking:
+            raise ContractError(
+                "this upload cannot proceed: " + "; ".join(str(i) for i in contract.issues),
+                issues=[i.__dict__ for i in contract.issues],
+            )
+        if contract.state == "proposed":
+            contract.accept()
+        contract.write_all(files)
+        return contract.commit(message=message)
+
+    def contract(self, contract_id: str) -> "Contract":
+        """Reattach to a contract, e.g. after a process restarted."""
+        from .contract import Contract
+
+        return Contract(self, self._get(contract_id))
+
+    # ---- one request each ------------------------------------------------
+
+    def _get(self, contract_id: str):
+        return self._contract_request("GET", f"/v2/contracts/{contract_id}")
+
+    def _patch(self, contract_id: str, columns=None, ignore=None):
+        body = {}
+        if columns:
+            body["columns"] = dict(columns)
+        if ignore is not None:
+            body["ignore"] = list(ignore)
+        return self._contract_request("PATCH", f"/v2/contracts/{contract_id}", json=body)
+
+    def _accept(self, contract_id: str, fingerprint=None):
+        body = {"schema_fingerprint": fingerprint} if fingerprint else {}
+        return self._contract_request("PUT", f"/v2/contracts/{contract_id}/accept", json=body)
+
+    def _write(self, contract_id: str, path: str):
+        """Stream a file up. The body is never held in memory on either side."""
+        name = _os.path.basename(path)
+        with open(path, "rb") as handle:
+            return self._contract_request(
+                "POST",
+                f"/v2/contracts/{contract_id}/data",
+                data=handle,
+                headers={
+                    "x-file-name": name,
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": str(_os.path.getsize(path)),
+                },
+            )
+
+    def _commit(self, contract_id: str, message=None, idempotency_key=None):
+        headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
+        return self._contract_request(
+            "POST",
+            f"/v2/contracts/{contract_id}/commit",
+            json={"message": message},
+            headers=headers,
+        )
+
+    def _abandon(self, contract_id: str) -> None:
+        self._contract_request("DELETE", f"/v2/contracts/{contract_id}")
+
+    def _contract_request(self, method: str, path: str, **kwargs):
+        """Like `_request`, but raises the v2 typed errors.
+
+        The status is a category and `code` is the contract, so this branches on
+        the body rather than on the number.
+        """
+        url = f"{self._base_url}{path}"
+        headers = {"Authorization": f"Bearer {_resolve_token(self._token)}"}
+        headers.update(kwargs.pop("headers", None) or {})
+
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                response = self._http.request(
+                    method, url, headers=headers, timeout=self._timeout, **kwargs
+                )
+            except requests.RequestException as exc:
+                if attempt <= self._max_retries and kwargs.get("data") is None:
+                    time.sleep(self._retry_backoff * attempt)
+                    continue
+                raise UploadClientError(f"Request failed: {exc}") from exc
+            if (
+                response.status_code in RETRIABLE_STATUS_CODES
+                and attempt <= self._max_retries
+                and kwargs.get("data") is None
+            ):
+                time.sleep(self._retry_backoff * attempt)
+                continue
+            break
+
+        if response.status_code == 204:
+            return {}
+        if response.ok:
+            return response.json() if response.content else {}
+
+        try:
+            payload = response.json()
+        except ValueError:
+            raise UploadClientError(f"{response.status_code}: {response.text}") from None
+        if isinstance(payload, dict) and "error" in payload:
+            raise error_for_contract(payload)
+        raise error_for_response(response.status_code, payload.get("detail", response.text))

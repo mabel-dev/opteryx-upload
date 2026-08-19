@@ -34,6 +34,9 @@ where = ["src"]
 [tool.isort]
 profile = "black"
 line_length = 100
+# Every file in this package is written one import per line; without this the
+# config says otherwise and a formatter run silently restyles the lot.
+force_single_line = true
 
 [tool.ruff]
 line-length = 100
