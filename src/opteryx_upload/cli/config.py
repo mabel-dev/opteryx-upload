@@ -11,9 +11,11 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from ..auth import DEFAULT_AUTH_URL
 from ..auth import PATAuthenticator
 from ..client import DEFAULT_BASE_URL
 from ..client import ContractClient
+from ..client import TokenLike
 from ..exceptions import AuthenticationError
 from ..exceptions import AuthorizationError
 from ..exceptions import ContractError
@@ -81,30 +83,43 @@ def build_client(
 ) -> ContractClient:
     """A client, or a `ConfigError` naming the variable that would fix it.
 
-    A ready-made JWT wins over a PAT because it is the more specific thing to
-    have said. Neither is read from a file: a token on disk is a token in a
-    backup, and the shells and CI systems that run this all have a way to hold a
-    secret that is not a file in the repository.
+    A personal access token wins over a ready-made JWT, and nothing here ever
+    asks a person for one. An access token lives about five minutes: by the time
+    somebody has fetched one and pasted it in it is close to expiring, and an
+    upload measured in gigabytes will outlive it and 401 half way through with
+    rows already written. A PAT is exchanged for a fresh one and re-exchanged
+    when it ages, which is what makes a long upload possible at all.
+
+    `--token` still wins when it is passed explicitly, because saying something
+    on the command line is saying it on purpose - a CI job that already holds a
+    valid assertion should not have it ignored. It is only the ambient
+    `OPTERYX_TOKEN` that loses to a PAT.
+
+    Neither is read from a file: a token on disk is a token in a backup, and the
+    shells and CI systems that run this all have a way to hold a secret that is
+    not a file in the repository.
     """
+    explicit_token = token
     token = token or os.environ.get(ENV_TOKEN)
     client_id = client_id or os.environ.get(ENV_CLIENT_ID)
     client_secret = client_secret or os.environ.get(ENV_CLIENT_SECRET)
 
-    if token:
-        credential = token
-    elif client_id and client_secret:
-        credential = PATAuthenticator(
+    if client_id and client_secret and not explicit_token:
+        credential: TokenLike = PATAuthenticator(
             client_id=client_id,
             client_secret=client_secret,
-            auth_url=os.environ.get(ENV_AUTH_URL) or "https://authenticate.opteryx.app",
+            auth_url=os.environ.get(ENV_AUTH_URL) or DEFAULT_AUTH_URL,
         )
+    elif token:
+        credential = token
     elif client_id or client_secret:
         missing = ENV_CLIENT_SECRET if client_id else ENV_CLIENT_ID
         raise ConfigError(f"a personal access token needs both halves; {missing} is not set")
     else:
         raise ConfigError(
-            f"no credentials: set {ENV_TOKEN} to a JWT, or {ENV_CLIENT_ID} and "
-            f"{ENV_CLIENT_SECRET} to a personal access token"
+            f"no credentials: set {ENV_CLIENT_ID} and {ENV_CLIENT_SECRET} to a personal "
+            f"access token. {ENV_TOKEN} takes a bearer JWT instead, but those expire in "
+            "minutes and will not outlive a large upload"
         )
 
     return ContractClient(token=credential, base_url=base_url(url), timeout=timeout)

@@ -55,9 +55,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     def credentials(sub):
         sub.add_argument("--url", help=f"upload service base URL (${config.ENV_URL})")
-        sub.add_argument("--token", help=f"a bearer JWT (${config.ENV_TOKEN})")
-        sub.add_argument("--client-id", help=f"PAT client id (${config.ENV_CLIENT_ID})")
-        sub.add_argument("--client-secret", help=f"PAT secret (${config.ENV_CLIENT_SECRET})")
+        sub.add_argument(
+            "--client-id", help=f"personal access token id (${config.ENV_CLIENT_ID})"
+        )
+        sub.add_argument(
+            "--client-secret", help=f"personal access token secret (${config.ENV_CLIENT_SECRET})"
+        )
+        sub.add_argument(
+            "--token",
+            help=f"a bearer JWT (${config.ENV_TOKEN}); expires in minutes, prefer a PAT",
+        )
         sub.add_argument("--json", action="store_true", help="print the contract as JSON")
         sub.add_argument(
             "--no-color", action="store_true", help="never colour the output"
@@ -573,13 +580,37 @@ def main(argv: Optional[Sequence[str]] = None, out=None, err=None) -> int:
         return config.USAGE
     except ContractError as error:
         _report_contract_error(error, err, style)
-        return config.exit_code_for(error)
+        code = config.exit_code_for(error)
+        if code == config.DENIED:
+            _report_auth_hint(err, style)
+        return code
     except UploadClientError as error:
         print(f"{PROGRAM}: {error}", file=err)
-        return config.exit_code_for(error)
+        code = config.exit_code_for(error)
+        if code == config.DENIED:
+            _report_auth_hint(err, style)
+        return code
     except (OSError, ValueError) as error:
         print(f"{PROGRAM}: {error}", file=err)
         return config.USAGE
+
+
+def _report_auth_hint(err, style: Style) -> None:
+    """Why a 401 is probably not a wrong password.
+
+    An access token lives about five minutes, so the usual cause of being
+    refused half way through an upload is that it aged out - which the service
+    reports as plain unauthorised, and which nobody guesses on the first read.
+    """
+    if os.environ.get(config.ENV_TOKEN) and not os.environ.get(config.ENV_CLIENT_ID):
+        print(
+            style.dim(
+                f"  {config.ENV_TOKEN} is a bearer JWT and those expire in minutes; set "
+                f"{config.ENV_CLIENT_ID} and {config.ENV_CLIENT_SECRET} to a personal "
+                "access token and it is refreshed for you"
+            ),
+            file=err,
+        )
 
 
 def _report_contract_error(error: ContractError, err, style: Style) -> None:

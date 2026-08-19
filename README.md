@@ -21,7 +21,8 @@ pip install "opteryx-upload[zstd]"
 Installing the package puts `opteryx-upload` on your PATH.
 
 ```bash
-export OPTERYX_TOKEN="<jwt>"          # or OPTERYX_CLIENT_ID + OPTERYX_CLIENT_SECRET
+export OPTERYX_CLIENT_ID="<client id>"
+export OPTERYX_CLIENT_SECRET="<pat secret>"
 opteryx-upload push findings.csv --to acme.security.findings
 ```
 
@@ -96,9 +97,21 @@ will eventually retry the wrong thing:
 | `-y`, `--yes` | accept inferred types unasked; required off a terminal |
 | `--json` | the contract as the service sent it |
 
-Credentials come from `OPTERYX_TOKEN`, or `OPTERYX_CLIENT_ID` and
-`OPTERYX_CLIENT_SECRET` for a personal access token, and the service from
-`OPTERYX_UPLOAD_URL`. Each has a flag if you would rather pass it.
+### Credentials
+
+A personal access token - `OPTERYX_CLIENT_ID` and `OPTERYX_CLIENT_SECRET`. It is
+exchanged for an access token and re-exchanged as that ages, which is the only
+thing that survives an upload measured in gigabytes.
+
+Nothing here asks you for a bearer JWT. One lives about five minutes: by the
+time you have fetched it and pasted it in it is close to expiring, and a long
+upload will outlive it and be refused half way through with rows already
+written. `OPTERYX_TOKEN` still takes one for a caller that already holds a valid
+assertion, and `--token` beats an ambient PAT because passing it is deliberate -
+but if both are in the environment, the PAT wins.
+
+The service comes from `OPTERYX_UPLOAD_URL`, the authenticate service from
+`OPTERYX_AUTH_URL`. Each has a flag if you would rather pass it.
 
 ## The full-screen version
 

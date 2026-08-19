@@ -170,11 +170,41 @@ class TestExitCodes:
 
 
 class TestCredentials:
-    def test_a_jwt_wins_over_a_pat(self, monkeypatch):
+    """A JWT lives about five minutes, so it is never what we ask for.
+
+    An upload measured in gigabytes outlives one and 401s half way through with
+    rows already written. A PAT is re-exchanged as it ages, which is what makes
+    a long upload possible at all.
+    """
+
+    def test_a_pat_wins_over_an_ambient_jwt(self, monkeypatch):
+        from opteryx_upload.auth import PATAuthenticator
+
         monkeypatch.setenv(config.ENV_TOKEN, "jwt")
         monkeypatch.setenv(config.ENV_CLIENT_ID, "id")
         monkeypatch.setenv(config.ENV_CLIENT_SECRET, "secret")
+        assert isinstance(config.build_client()._token, PATAuthenticator)
+
+    def test_a_token_passed_on_purpose_still_wins(self, monkeypatch):
+        # Saying it on the command line is saying it deliberately; a CI job
+        # holding a valid assertion should not have it quietly ignored.
+        monkeypatch.setenv(config.ENV_CLIENT_ID, "id")
+        monkeypatch.setenv(config.ENV_CLIENT_SECRET, "secret")
+        assert config.build_client(token="explicit")._token == "explicit"
+
+    def test_a_jwt_alone_is_accepted(self, monkeypatch):
+        monkeypatch.setenv(config.ENV_TOKEN, "jwt")
+        monkeypatch.delenv(config.ENV_CLIENT_ID, raising=False)
+        monkeypatch.delenv(config.ENV_CLIENT_SECRET, raising=False)
         assert config.build_client()._token == "jwt"
+
+    def test_the_pat_is_re_resolved_per_request_not_captured_once(self, monkeypatch):
+        # The refresh is worthless if the client froze the first answer.
+        from opteryx_upload.client import _resolve_token
+
+        answers = iter(["first", "second"])
+        assert _resolve_token(lambda: next(answers)) == "first"
+        assert _resolve_token(lambda: next(answers)) == "second"
 
     def test_half_a_pat_names_the_half_that_is_missing(self, monkeypatch):
         monkeypatch.delenv(config.ENV_TOKEN, raising=False)
@@ -189,7 +219,9 @@ class TestCredentials:
             monkeypatch.delenv(name, raising=False)
         with pytest.raises(config.ConfigError) as raised:
             config.build_client()
-        assert config.ENV_TOKEN in str(raised.value)
+        # led by the credential that survives an upload
+        message = str(raised.value)
+        assert message.index(config.ENV_CLIENT_ID) < message.index(config.ENV_TOKEN)
 
 
 class TestPlanTable:
