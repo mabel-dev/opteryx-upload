@@ -363,6 +363,45 @@ contract.commit(message="retry", idempotency_key="nightly-2026-08-19")
 Commit is idempotent on `idempotency_key`: a retry after a lost response returns
 the original snapshot instead of writing a second one.
 
+## Parts held in memory
+
+For a producer that never writes a part to disk - a log gateway whose only disk
+is its WAL, say. `negotiate` takes `samples` instead of `files`, and `Contract`
+gains `write_bytes`:
+
+```python
+import json, zstandard
+from opteryx_upload import ContractClient, Schema, Target
+
+part = zstandard.ZstdCompressor().compress(
+    b"\n".join(json.dumps(record).encode() for record in records)
+)
+name = "gateway-0000.ndjson.zst"
+
+client = ContractClient(token=auth)
+contract = client.negotiate(
+    Target("acme", "security", "findings"),
+    schema=Schema.declared({"cve_id": "VARCHAR", "source_ip": "IPV4"}),
+    samples=[(name, part[:4 * 1024 * 1024])],
+)
+contract.write_bytes(part, name, content_type="application/x-ndjson")
+contract.commit(message="nightly", idempotency_key=batch_id)
+```
+
+The name carries the format exactly as a path does, codec suffix included:
+`.ndjson.zst` is NDJSON that happens to be zstd, and the service decodes it.
+gzip, zstd, brotli and DEFLATE all work; the SDK declares `Content-Encoding`
+from the suffix, which matters because gzip and zstd can be identified from
+their leading bytes and brotli and raw DEFLATE cannot.
+
+`content_type` is sent as given, so `application/x-ndjson` is a second,
+independent way for the service to get the format right if the name is ever
+wrong.
+
+Exactly one of `files` or `samples`. `write()` still streams from disk and is
+not `write_bytes(open(path, "rb").read())` - streaming a four gigabyte parquet
+file is the right thing and stays.
+
 ## Authenticating with an access token
 
 `PATAuthenticator` exchanges an access token (a username and the token itself)

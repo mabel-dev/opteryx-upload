@@ -474,3 +474,167 @@ class TestV1StillWorks:
         from opteryx_upload import UploadClient
 
         assert isinstance(client, UploadClient)
+
+
+# ---------------------------------------------------------------------------
+# Bytes in, for a producer whose parts never touch disk
+# ---------------------------------------------------------------------------
+
+
+class TestBytesEntryPoints:
+    """An entry point, not a second code path.
+
+    `write()` is not `write_bytes(open(path).read())`: streaming a four gigabyte
+    parquet file from disk is right and stays. These are a second door onto the
+    same request.
+    """
+
+    @responses.activate
+    def test_samples_are_sent_without_touching_the_disk(self, client):
+        responses.add(
+            responses.POST, f"{BASE_URL}/v2/contracts", json=contract_body(), status=201
+        )
+        client.negotiate(
+            TARGET,
+            schema=Schema.declared({"cve_id": "VARCHAR"}),
+            samples=[("part-0000.ndjson.zst", b"\x28\xb5\x2f\xfd" + b"payload")],
+        )
+        body = responses.calls[0].request.body
+        assert b"part-0000.ndjson.zst" in body
+        assert b"payload" in body
+
+    @responses.activate
+    def test_a_name_that_implies_a_codec_declares_it(self, client):
+        # gzip and zstd are identifiable from their bytes; brotli and raw
+        # DEFLATE are not, so the header is the only way to say so.
+        responses.add(
+            responses.POST, f"{BASE_URL}/v2/contracts", json=contract_body(), status=201
+        )
+        client.negotiate(
+            TARGET,
+            schema=Schema.declared({"cve_id": "VARCHAR"}),
+            samples=[("part.ndjson.br", b"brotli-bytes")],
+        )
+        assert b"Content-Encoding: br" in responses.calls[0].request.body
+
+    @responses.activate
+    def test_files_and_samples_are_mutually_exclusive(self, client, csv_file):
+        # Both is ambiguous about what the write will send; neither is the
+        # mistake this has always raised for.
+        for kwargs in (
+            {"files": [csv_file], "samples": [("a.ndjson", b"{}")]},
+            {},
+        ):
+            with pytest.raises(ValueError, match="files or samples"):
+                client.negotiate(TARGET, schema=Schema.inferred(), **kwargs)
+
+    @responses.activate
+    def test_a_schema_is_still_required(self, client):
+        with pytest.raises(TypeError):
+            client.negotiate(TARGET, samples=[("a.ndjson", b"{}")])
+
+    @responses.activate
+    def test_write_bytes_sends_the_name_the_length_and_the_media_type(self, client):
+        responses.add(
+            responses.POST, f"{BASE_URL}/v2/contracts", json=contract_body(), status=201
+        )
+        responses.add(
+            responses.POST,
+            f"{BASE_URL}/v2/contracts/ct_20260819_abc/data",
+            json=contract_body("writing", written=[{"source": "part.ndjson.zst", "rows": 7}]),
+            status=200,
+        )
+        contract = client.negotiate(
+            TARGET, schema=Schema.declared({"cve_id": "VARCHAR"}),
+            samples=[("part.ndjson.zst", b"sample")],
+        )
+        written = contract.write_bytes(
+            b"compressed-payload", "part.ndjson.zst", content_type="application/x-ndjson"
+        )
+        request = responses.calls[-1].request
+        assert request.headers["x-file-name"] == "part.ndjson.zst"
+        assert request.headers["Content-Type"] == "application/x-ndjson"
+        assert request.headers["Content-Length"] == str(len(b"compressed-payload"))
+        assert request.headers["Content-Encoding"] == "zstd"
+        assert request.body == b"compressed-payload"
+        assert written == {"source": "part.ndjson.zst", "rows": 7}
+
+    @responses.activate
+    def test_an_explicit_encoding_beats_the_one_the_name_implies(self, client):
+        responses.add(
+            responses.POST, f"{BASE_URL}/v2/contracts", json=contract_body(), status=201
+        )
+        responses.add(
+            responses.POST,
+            f"{BASE_URL}/v2/contracts/ct_20260819_abc/data",
+            json=contract_body("writing"),
+            status=200,
+        )
+        contract = client.negotiate(
+            TARGET, schema=Schema.declared({"cve_id": "VARCHAR"}), samples=[("a.ndjson", b"x")]
+        )
+        contract.write_bytes(b"x", "part.bin", content_encoding="zstd")
+        assert responses.calls[-1].request.headers["Content-Encoding"] == "zstd"
+
+    @responses.activate
+    def test_a_plain_name_declares_no_encoding(self, client):
+        responses.add(
+            responses.POST, f"{BASE_URL}/v2/contracts", json=contract_body(), status=201
+        )
+        responses.add(
+            responses.POST,
+            f"{BASE_URL}/v2/contracts/ct_20260819_abc/data",
+            json=contract_body("writing"),
+            status=200,
+        )
+        contract = client.negotiate(
+            TARGET, schema=Schema.declared({"cve_id": "VARCHAR"}), samples=[("a.ndjson", b"x")]
+        )
+        contract.write_bytes(b"{}", "part.ndjson")
+        assert "Content-Encoding" not in responses.calls[-1].request.headers
+
+    @responses.activate
+    def test_write_bytes_raises_the_same_typed_errors_as_write(self, client):
+        # Same request, same refusals - naming the column and the row, on this
+        # call rather than at commit.
+        responses.add(
+            responses.POST, f"{BASE_URL}/v2/contracts", json=contract_body(), status=201
+        )
+        responses.add(
+            responses.POST,
+            f"{BASE_URL}/v2/contracts/ct_20260819_abc/data",
+            json={
+                "error": {
+                    "code": "value_not_castable",
+                    "message": "column 'source_ip' cannot hold 'unknown' as IPV4",
+                    "column": "source_ip",
+                    "row": 41207,
+                }
+            },
+            status=409,
+        )
+        contract = client.negotiate(
+            TARGET, schema=Schema.declared({"cve_id": "VARCHAR"}), samples=[("a.ndjson", b"x")]
+        )
+        with pytest.raises(ValueNotCastable) as caught:
+            contract.write_bytes(b"{}", "a.ndjson")
+        assert caught.value.column == "source_ip"
+        assert caught.value.row == 41207
+
+    @responses.activate
+    def test_the_path_form_still_streams_from_disk(self, client, csv_file):
+        """The reason `write` is not this with a read() in front of it."""
+        responses.add(
+            responses.POST, f"{BASE_URL}/v2/contracts", json=contract_body(), status=201
+        )
+        responses.add(
+            responses.POST,
+            f"{BASE_URL}/v2/contracts/ct_20260819_abc/data",
+            json=contract_body("writing"),
+            status=200,
+        )
+        contract = client.negotiate(TARGET, [csv_file], Schema.declared({"cve_id": "VARCHAR"}))
+        contract.write(csv_file)
+        request = responses.calls[-1].request
+        assert request.headers["Content-Length"] == str(len(CSV))
+        assert "Content-Encoding" not in request.headers

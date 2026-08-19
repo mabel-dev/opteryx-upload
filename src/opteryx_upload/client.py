@@ -10,6 +10,7 @@ from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Tuple
 from typing import Union
 
 import requests
@@ -43,6 +44,33 @@ TokenLike = Union[str, Callable[[], str]]
 
 def _resolve_token(token: TokenLike) -> str:
     return token() if callable(token) else token
+
+
+#: Filename suffix -> the `Content-Encoding` token that names the same codec.
+_CODEC_HEADERS = {
+    "gz": "gzip",
+    "gzip": "gzip",
+    "z": "deflate",
+    "zz": "deflate",
+    "deflate": "deflate",
+    "br": "br",
+    "zst": "zstd",
+    "zstd": "zstd",
+}
+
+
+def _encoding_of(name: str) -> Optional[str]:
+    """The `Content-Encoding` a name implies, or None.
+
+    Sent because gzip and zstd are identifiable from their leading bytes and
+    brotli and raw DEFLATE are not - the service can sniff the first two and has
+    to be told about the other two. Declaring it for all of them means the name
+    means the same thing whichever codec it happens to be, rather than working
+    for two of the four.
+    """
+    if not name or "." not in name:
+        return None
+    return _CODEC_HEADERS.get(name.rsplit(".", 1)[-1].lower())
 
 
 class UploadSession:
@@ -347,9 +375,10 @@ class ContractClient(UploadClient):
     def negotiate(
         self,
         target: "Target",
-        files: List[str],
-        schema: "Schema",
+        files: Optional[List[str]] = None,
+        schema: "Schema" = None,
         *,
+        samples: Optional[List[Tuple[str, bytes]]] = None,
         ignore: Optional[List[str]] = None,
         on_conflict: str = "append",
         sample_bytes: int = _DEFAULT_SAMPLE_BYTES,
@@ -360,12 +389,26 @@ class ContractClient(UploadClient):
         so this costs megabytes whatever the files weigh. Every file is sampled,
         not just the first: one contract covers all of them, so two that disagree
         have to be caught here rather than at commit.
+
+        `samples` is `[(name, bytes), ...]` for a caller that already holds them
+        and never writes the part to disk. The name carries the format exactly as
+        a path would, codec suffix included: `part-0000.ndjson.zst` is NDJSON
+        that happens to be zstd, and the service decodes it.
+
+        Exactly one of `files` or `samples`. Passing both is ambiguous about
+        which the write will send, and passing neither is the mistake this used
+        to raise for.
         """
         from .contract import Contract
         from .sampling import sample as _sample
 
-        if not files:
-            raise ValueError("negotiate needs at least one file")
+        if bool(files) == bool(samples):
+            raise ValueError(
+                "negotiate needs files or samples, and not both: `files` reads "
+                "from disk, `samples` is [(name, bytes), ...] you already hold"
+            )
+        if schema is None:
+            raise TypeError("negotiate() missing required argument: 'schema'")
 
         body = {
             "target": target.as_dict(),
@@ -376,9 +419,24 @@ class ContractClient(UploadClient):
             body["ignore"] = list(ignore)
 
         parts = [("contract", (None, _json.dumps(body), "application/json"))]
-        for path in files:
-            data, _kind = _sample(path, sample_bytes)
-            parts.append(("sample", (_os.path.basename(path), data, "application/octet-stream")))
+        if files:
+            for path in files:
+                data, _kind = _sample(path, sample_bytes)
+                parts.append(
+                    ("sample", (_os.path.basename(path), data, "application/octet-stream"))
+                )
+        else:
+            for name, data in samples:
+                # Sent as given. A caller holding compressed bytes has a prefix
+                # of a compressed stream, which the service decodes and trims to
+                # a record boundary - it cannot be trimmed here, because where a
+                # cut in the compressed bytes lands once expanded is not
+                # knowable without expanding them.
+                part = (name, bytes(data)[:sample_bytes], "application/octet-stream")
+                encoding = _encoding_of(name)
+                if encoding:
+                    part = part + ({"Content-Encoding": encoding},)
+                parts.append(("sample", part))
 
         return Contract(self, self._contract_request("POST", "/v2/contracts", files=parts))
 
@@ -454,6 +512,33 @@ class ContractClient(UploadClient):
                     "Content-Length": str(size),
                 },
             )
+
+    def _write_bytes(
+        self,
+        contract_id: str,
+        data: bytes,
+        name: str,
+        content_type: str = "application/octet-stream",
+        content_encoding: Optional[str] = None,
+    ):
+        """One part held in memory. The same request `_write` makes, from bytes.
+
+        Not `_write` with a temp file, and not `_write` reading everything into
+        memory: streaming from disk is right for a four gigabyte parquet file
+        and stays exactly as it is. This is a second door onto the same request,
+        which is why it sets the same headers and raises the same errors.
+        """
+        headers = {
+            "x-file-name": name,
+            "Content-Type": content_type,
+            "Content-Length": str(len(data)),
+        }
+        encoding = content_encoding or _encoding_of(name)
+        if encoding:
+            headers["Content-Encoding"] = encoding
+        return self._contract_request(
+            "POST", f"/v2/contracts/{contract_id}/data", data=data, headers=headers
+        )
 
     def _commit(self, contract_id: str, message=None, idempotency_key=None):
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
