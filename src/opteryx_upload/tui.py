@@ -18,6 +18,7 @@ is the one part of this that is allowed to take an hour.
 
 from __future__ import annotations
 
+import glob as globbing
 import os
 import threading
 from typing import Any
@@ -26,6 +27,10 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 
+# The v2 reader's, which answers None for an extension it does not know;
+# chunking's namesake raises instead, and a glob over a real directory is
+# full of extensions nobody wants an exception about.
+from .sampling import detect_kind
 from .exceptions import UploadClientError
 from .models import Target
 from .schema import Schema
@@ -44,10 +49,10 @@ SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 #: climbs, slow enough to be free.
 TICK_MS = 90
 
-HELP_IDLE = "a add  d remove  t target  c account  n negotiate  q quit"
-HELP_PLAN = "↑↓ column  e retype  x ignore  ⏎ accept  u upload  r re-plan  q quit"
-HELP_READY = "↑↓ column  e retype  x ignore  u upload  r re-plan  q quit"
-HELP_DONE = "n start another  q quit"
+HELP_IDLE = "a add  t target  n negotiate  h keys  q quit"
+HELP_PLAN = "↑↓ column  e retype  x ignore  ⏎ accept  u upload  h keys  q quit"
+HELP_READY = "↑↓ column  e retype  x ignore  u upload  h keys  q quit"
+HELP_DONE = "n start another  h keys  q quit"
 
 # Colour pair numbers. Named because `curses.color_pair(4)` at the call site is
 # how a table ends up red for no reason six months from now.
@@ -122,6 +127,11 @@ class App:
         self.error = ""
         self.job: Optional[Job] = None
         self._signing_in: Optional[str] = None
+        #: Whether the key list is covering the screen.
+        self.help = False
+        #: The layout the last frame was drawn for, so a shift can force a full
+        #: repaint instead of a difference.
+        self.drawn_signature = None
         self.frame = 0
         self.done: Optional[str] = None
         self.quit = False
@@ -348,9 +358,42 @@ class Screen:
             pass
 
 
+def _layout_signature(app: App):
+    """What determines where each section starts.
+
+    Adding a file pushes every block below it down a row, and the parts of the
+    old line that the new one happens to overwrite with a space are left
+    standing: ncurses skips cells it believes already match, and after a shift
+    that belief is a row out. The result is a fragment of the previous section
+    header sitting inside a filename.
+    """
+    return (
+        len(app.files),
+        app.client is None,
+        app.contract is None,
+        len(app.plan),
+        len(app.contract.issues) if app.contract is not None else 0,
+        app.help,
+    )
+
+
 def draw(app: App, window, curses_module, colour: bool) -> None:
+    signature = _layout_signature(app)
+    if signature != app.drawn_signature:
+        # Repaint every cell rather than the difference. The screen is thirty
+        # rows; the optimisation this gives up is worth microseconds, and what
+        # it buys is that a section moving down can never leave part of itself
+        # behind.
+        window.clearok(True)
+        app.drawn_signature = signature
     window.erase()
     screen = Screen(window, curses_module, colour)
+
+    if app.help:
+        _draw_help(screen)
+        window.noutrefresh()
+        curses_module.doupdate()
+        return
 
     screen.line(" opteryx upload", C_HEAD, bold=True)
     screen.span(0, max(len(" opteryx upload") + 2, screen.width - len(app.base_url) - 2),
@@ -416,7 +459,7 @@ def draw(app: App, window, curses_module, colour: bool) -> None:
     screen.line(f" {status}", pair, row=screen.height - 2)
 
     if app.client is None:
-        keys = "c sign in  q quit"
+        keys = "c sign in  h keys  q quit"
     elif app.contract is None:
         keys = HELP_IDLE
     elif app.contract.state == "committed":
@@ -428,6 +471,53 @@ def draw(app: App, window, curses_module, colour: bool) -> None:
     screen.line(f" {keys}", C_DIM, row=screen.height - 1)
     window.noutrefresh()
     curses_module.doupdate()
+
+
+#: What every key does, in the order you would need them. Grouped because the
+#: first four are setting an upload up and the rest are reading a plan, and a
+#: flat alphabetical list makes those look like one thing.
+HELP_KEYS = [
+    ("", "GETTING READY"),
+    ("c", "sign in with an access token"),
+    ("a", "add files - a path, a folder, or a glob like data/*.parquet"),
+    ("d", "remove the file under the cursor"),
+    ("t", "set the destination, workspace.collection.dataset"),
+    ("n", "negotiate: agree what the data will become, sending no data"),
+    ("", ""),
+    ("", "READING THE PLAN"),
+    ("↑ ↓", "move down the columns (j and k also work)"),
+    ("e", "change the type of the column under the cursor"),
+    ("x", "read this column and do not write it"),
+    ("r", "start the plan again from the files as they are now"),
+    ("", ""),
+    ("", "DOING IT"),
+    ("⏎", "accept types that were read from your data"),
+    ("u", "upload every file and commit"),
+    ("", ""),
+    ("", "ANYWHERE"),
+    ("h", "this list; any key closes it"),
+    ("q", "quit - an unfinished contract is abandoned, which undoes nothing"),
+]
+
+
+def _draw_help(screen: Screen) -> None:
+    screen.line(" KEYS", C_HEAD, bold=True)
+    screen.line()
+    width = max(len(key) for key, _ in HELP_KEYS)
+    for key, description in HELP_KEYS:
+        if not key and not description:
+            screen.line()
+            continue
+        if not key:
+            screen.line(f" {description}", C_DIM)
+            continue
+        row = screen.row
+        screen.line(f"   {key.rjust(width)}   {description}")
+        # After the line, not before: `line` writes the full width and would
+        # paint over a key drawn first, which is how this screen came out with
+        # every description and not one of the keys they belong to.
+        screen.span(row, 3, key.rjust(width), C_SEL, bold=True)
+    screen.line(" any key to go back", C_DIM, row=screen.height - 1)
 
 
 def _draw_plan(app: App, screen: Screen) -> None:
@@ -533,6 +623,14 @@ def handle(app: App, key: int, window, curses_module) -> None:
     if key in (ord("q"), ord("Q")):
         app.quit = True
         return
+    if app.help:
+        # Any key closes it, including the one that opened it. A help screen you
+        # have to find the exit of is its own small joke.
+        app.help = False
+        return
+    if key in (ord("h"), ord("?"), curses_module.KEY_F1):
+        app.help = True
+        return
     if app.job is not None:
         return  # a second negotiate on top of the first is two contracts
 
@@ -543,14 +641,9 @@ def handle(app: App, key: int, window, curses_module) -> None:
     elif key in (curses_module.KEY_UP, ord("k")):
         app.cursor = max(app.cursor - 1, 0)
     elif key == ord("a"):
-        answer = prompt(window, curses_module, "file:")
+        answer = prompt(window, curses_module, "file, folder or glob:")
         if answer:
-            found = _expand(answer)
-            if found:
-                app.files.extend(found)
-                app.error = ""
-            else:
-                app.error = f"no such file: {answer}"
+            add_files(app, answer)
     elif key == ord("d") and app.contract is None and app.files:
         app.files.pop(min(app.cursor, len(app.files) - 1))
         app.cursor = min(app.cursor, max(len(app.files) - 1, 0))
@@ -608,12 +701,54 @@ def handle(app: App, key: int, window, curses_module) -> None:
 
 
 def _expand(pattern: str) -> List[str]:
-    import glob as globbing
+    """Everything `pattern` names that this service can actually read.
 
-    pattern = os.path.expanduser(pattern)
+    A path, a directory, or a glob. A glob is the normal case rather than the
+    clever one - an export is `part-0000.parquet` through `part-0031.parquet`,
+    and adding those one at a time is not a thing anybody should do at a
+    keyboard.
+
+    Only files with a readable extension, however they were named. A glob over
+    a real directory picks up READMEs and checksums, and a file named in full
+    that cannot be read is better refused here - the alternative is that it
+    joins the list, looks fine, and fails the negotiation it is part of.
+    """
+    pattern = os.path.expanduser(pattern.strip())
     if os.path.isfile(pattern):
-        return [pattern]
-    return [match for match in sorted(globbing.glob(pattern)) if os.path.isfile(match)]
+        return [pattern] if detect_kind(pattern) else []
+    if os.path.isdir(pattern):
+        found = sorted(
+            os.path.join(pattern, name) for name in os.listdir(pattern)
+        )
+    else:
+        found = sorted(globbing.glob(pattern))
+    return [path for path in found if os.path.isfile(path) and detect_kind(path)]
+
+
+def add_files(app: App, answer: str) -> None:
+    """Fold what a pattern found into the list, and report it.
+
+    Silence after typing a glob is the failure worth avoiding: no way to tell
+    "that matched nothing" from "that matched forty and they are below the
+    fold".
+    """
+    found = _expand(answer)
+    if not found:
+        if os.path.isfile(os.path.expanduser(answer.strip())):
+            app.error = f"{os.path.basename(answer)}: use a .parquet, .csv or .ndjson file"
+        else:
+            app.error = f"nothing matched {answer}"
+        return
+    fresh = [path for path in found if path not in app.files]
+    app.files.extend(fresh)
+    app.error = ""
+    already = len(found) - len(fresh)
+    if not fresh:
+        app.status = f"already added, all {already} of them"
+    elif len(fresh) == 1:
+        app.status = f"added {os.path.basename(fresh[0])}"
+    else:
+        app.status = f"added {len(fresh)} files" + (f", {already} already there" if already else "")
 
 
 # ---------------------------------------------------------------------------

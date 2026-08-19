@@ -10,6 +10,7 @@ contract that could still be abandoned.
 from __future__ import annotations
 
 import curses
+import os
 import pathlib
 import time
 
@@ -312,6 +313,109 @@ class TestSigningIn:
         settle(app)
         assert app.account == "pat_abc"
         assert "opt_secret_01" not in repr(vars(app))
+
+
+class TestAddingFiles:
+    """A glob is the normal case, not the clever one.
+
+    An export is part-0000.parquet through part-0031.parquet; adding those one
+    at a time is not a thing anybody should do at a keyboard.
+    """
+
+    def files(self, tmp_path, names):
+        for name in names:
+            (tmp_path / name).write_text("a,b\n1,2\n")
+        return tmp_path
+
+    def test_a_glob_adds_everything_it_matches(self, tmp_path):
+        self.files(tmp_path, ["part-0000.csv", "part-0001.csv", "part-0002.csv"])
+        app, _ = app_with(files=())
+        tui.add_files(app, str(tmp_path / "*.csv"))
+        assert len(app.files) == 3
+        assert "added 3 files" in app.status
+
+    def test_a_folder_skips_what_cannot_be_read(self, tmp_path):
+        # data/* in a real directory picks up READMEs and checksums, and every
+        # one of those is a negotiation that fails.
+        self.files(tmp_path, ["a.csv", "b.parquet", "README.md", "SHA256SUMS"])
+        app, _ = app_with(files=())
+        tui.add_files(app, str(tmp_path))
+        assert sorted(os.path.basename(f) for f in app.files) == ["a.csv", "b.parquet"]
+
+    def test_a_file_named_in_full_that_cannot_be_read_is_refused_by_name(self, tmp_path):
+        # Refused here rather than added, because added means it looks fine and
+        # then fails the negotiation it is part of.
+        self.files(tmp_path, ["notes.txt"])
+        app, _ = app_with(files=())
+        tui.add_files(app, str(tmp_path / "notes.txt"))
+        assert app.files == []
+        assert "notes.txt" in app.error
+        assert ".parquet" in app.error
+
+    def test_the_same_glob_twice_does_not_double_the_list(self, tmp_path):
+        self.files(tmp_path, ["a.csv", "b.csv"])
+        app, _ = app_with(files=())
+        tui.add_files(app, str(tmp_path / "*.csv"))
+        tui.add_files(app, str(tmp_path / "*.csv"))
+        assert len(app.files) == 2
+        assert "already" in app.status
+
+    def test_a_pattern_that_matches_nothing_says_so(self, tmp_path):
+        # Silence is the failure worth avoiding: no way to tell "matched
+        # nothing" from "matched forty and they are below the fold".
+        app, _ = app_with(files=())
+        tui.add_files(app, str(tmp_path / "*.avro"))
+        assert app.files == []
+        assert "nothing matched" in app.error
+
+
+class TestHelp:
+    def test_h_opens_it_and_any_key_closes_it(self):
+        app, _ = app_with()
+        tui.handle(app, ord("h"), window=None, curses_module=curses)
+        assert app.help is True
+        tui.handle(app, ord("x"), window=None, curses_module=curses)
+        assert app.help is False
+
+    def test_a_key_that_closes_it_does_nothing_else(self):
+        # Otherwise reading the list costs you an edit you did not mean.
+        contract = FakeContract(state="proposed")
+        app, _ = app_with(contract)
+        app.contract = contract
+        app.help = True
+        tui.handle(app, ord("x"), window=None, curses_module=curses)
+        assert contract.ignored is None
+
+    def test_q_still_quits_from_the_help_screen(self):
+        app, _ = app_with()
+        app.help = True
+        tui.handle(app, ord("q"), window=None, curses_module=curses)
+        assert app.quit is True
+
+    def test_every_key_the_screen_offers_is_listed(self):
+        listed = {key for key, _ in tui.HELP_KEYS if key}
+        for key in ("c", "a", "d", "t", "n", "e", "x", "r", "u", "h", "q"):
+            assert key in listed, f"{key} does something and is not in the help"
+
+
+class TestRepainting:
+    def test_a_layout_shift_forces_a_full_repaint(self):
+        """Adding a file pushes every section below it down a row.
+
+        ncurses skips cells it believes already match, and after a shift that
+        belief is a row out - which showed up as a fragment of the ACCOUNT
+        header sitting inside a filename.
+        """
+        app, _ = app_with(files=("a.csv",))
+        first = tui._layout_signature(app)
+        app.files.append("b.csv")
+        assert tui._layout_signature(app) != first
+
+    def test_signing_in_shifts_it_too(self):
+        app = tui.App(None, ["a.csv"], "a.b.c", "https://upload.test")
+        signed_out = tui._layout_signature(app)
+        app.client = object()
+        assert tui._layout_signature(app) != signed_out
 
 
 class TestClosingUp:

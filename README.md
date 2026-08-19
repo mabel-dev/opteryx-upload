@@ -144,8 +144,13 @@ row under the cursor.
  ↑↓ column  e retype  x ignore  ⏎ accept  u upload  r re-plan  q quit
 ```
 
-`c` signs in, `a` adds a file, `t` sets the destination, `n` negotiates, `x`
-drops a column, `u` uploads and commits.
+`h` lists every key. `c` signs in, `a` adds files, `t` sets the destination,
+`n` negotiates, `x` drops a column, `u` uploads and commits.
+
+`a` takes a path, a folder, or a glob - `data/*.parquet`, or the folder itself.
+A glob or a folder only picks up files the service can read, so `data/*` does
+not drag a README and a checksums file into the upload, and adding the same
+pattern twice does not double the list.
 
 Starting it with no credentials opens the screen rather than refusing: press `c`
 and it asks for your access token username, then the access token, which is
