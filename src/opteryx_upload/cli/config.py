@@ -83,17 +83,13 @@ def build_client(
 ) -> ContractClient:
     """A client, or a `ConfigError` naming the variable that would fix it.
 
-    A personal access token wins over a ready-made JWT, and nothing here ever
-    asks a person for one. An access token lives about five minutes: by the time
-    somebody has fetched one and pasted it in it is close to expiring, and an
-    upload measured in gigabytes will outlive it and 401 half way through with
-    rows already written. A PAT is exchanged for a fresh one and re-exchanged
-    when it ages, which is what makes a long upload possible at all.
+    A personal access token wins over an ambient `OPTERYX_TOKEN`. An access
+    token expires in minutes and an upload can take longer than that, so a
+    static one is refused part way through with rows already staged; a PAT is
+    re-exchanged as it ages, and the client resolves it per request.
 
-    `--token` still wins when it is passed explicitly, because saying something
-    on the command line is saying it on purpose - a CI job that already holds a
-    valid assertion should not have it ignored. It is only the ambient
-    `OPTERYX_TOKEN` that loses to a PAT.
+    `--token` still wins when passed explicitly - a CI job that already holds a
+    valid assertion should not have it ignored. Only the ambient variable loses.
 
     Neither is read from a file: a token on disk is a token in a backup, and the
     shells and CI systems that run this all have a way to hold a secret that is
@@ -117,9 +113,7 @@ def build_client(
         raise ConfigError(f"a personal access token needs both halves; {missing} is not set")
     else:
         raise ConfigError(
-            f"no credentials: set {ENV_CLIENT_ID} and {ENV_CLIENT_SECRET} to a personal "
-            f"access token. {ENV_TOKEN} takes a bearer JWT instead, but those expire in "
-            "minutes and will not outlive a large upload"
+            f"no credentials: set {ENV_CLIENT_ID} and {ENV_CLIENT_SECRET}, or {ENV_TOKEN}"
         )
 
     return ContractClient(token=credential, base_url=base_url(url), timeout=timeout)
