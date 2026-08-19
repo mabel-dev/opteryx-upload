@@ -161,7 +161,9 @@ row under the cursor.
  ↑↓ move  ⏎ open  ← up  space tag  a all here  g type a path  . hidden  esc back
 ```
 
-Space tags, `a` tags every readable file in the directory, and tagging survives
+The cursor always starts on the top row, so a sequence of keys means the same
+thing in every directory. Space tags, `a` tags every readable file in the
+directory, and tagging survives
 walking into another one, so an upload can gather from several places. Files the
 service cannot read are listed and dimmed rather than hidden - an empty
 directory is the one answer that sends you looking in the wrong place. Anything
@@ -169,6 +171,11 @@ already on the upload list shows as tagged and is not offered twice.
 
 `g` types a path, a folder or a glob instead, which is still the fastest way in
 when the path is already on your clipboard.
+
+Both front ends use the Alucard palette, defined once in
+`opteryx_upload/cli/render.py`. Truecolor when the terminal advertises it, the
+nearest xterm-256 index when it does not, and the basic eight underneath that.
+`NO_COLOR` turns it all off.
 
 Starting it with no credentials opens the screen rather than refusing: press `c`
 and it asks for your access token username, then the access token, which is

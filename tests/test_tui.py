@@ -438,11 +438,11 @@ class TestBrowser:
         assert kinds.count(tui.DIR) == 2
         assert kinds.index(tui.DIR) < len(kinds) - 1
 
-    def test_it_opens_on_something_worth_choosing_not_on_the_way_out(self, tmp_path):
-        # Arriving with the cursor on `..` is how every keystroke in a
-        # directory starts with pressing down.
+    def test_the_cursor_starts_on_the_top_row(self, tmp_path):
+        # Every arrival looks the same, so a sequence of keys means the same
+        # thing in every directory rather than depending on what is in it.
         browser = tui.Browser(str(self.tree(tmp_path) / "2026-08"))
-        assert browser.current[2] == tui.FILE
+        assert browser.cursor == 0
 
     def test_a_file_it_cannot_read_is_listed_and_cannot_be_tagged(self, tmp_path):
         # Hiding it answers "where is my data" with an empty directory.
@@ -466,16 +466,20 @@ class TestBrowser:
     def test_tagging_survives_walking_into_another_directory(self, tmp_path):
         root = self.tree(tmp_path)
         browser = tui.Browser(str(root / "2026-08"))
+        browser.move(1)  # off `..`, onto the first file
         browser.toggle()
         assert len(browser.tagged) == 1
         browser.up()
         assert len(browser.tagged) == 1
 
-    def test_going_up_lands_on_the_directory_you_left(self, tmp_path):
+    def test_the_cursor_starts_at_the_top_after_moving_too(self, tmp_path):
         root = self.tree(tmp_path)
         browser = tui.Browser(str(root / "2026-08"))
+        browser.move(2)
         browser.up()
-        assert browser.current[0].rstrip("/\\") == "2026-08"
+        assert browser.cursor == 0
+        browser.enter()
+        assert browser.cursor == 0
 
     def test_a_tags_every_readable_file_here_and_nothing_else(self, tmp_path):
         browser = tui.Browser(str(self.tree(tmp_path) / "2026-08"))
@@ -501,6 +505,7 @@ class TestBrowser:
 
     def test_nothing_tagged_means_the_row_under_the_cursor(self, tmp_path):
         browser = tui.Browser(str(self.tree(tmp_path) / "2026-08"))
+        browser.move(1)  # off `..`, onto the first file
         assert len(browser.chosen()) == 1
         assert browser.chosen()[0].endswith("part-0000.csv")
 
@@ -547,6 +552,19 @@ class TestBrowser:
         tui.browse(app, 10, window=None, curses_module=curses)
         assert app.browser is not None
         assert app.files == []
+
+
+class TestColours:
+    def test_the_screen_reads_the_same_palette_as_the_printed_output(self):
+        from opteryx_upload.cli import render
+
+        for name in tui.PAIRS.values():
+            assert name in render.PALETTE
+
+    def test_dim_is_an_attribute_and_not_a_palette_entry(self):
+        # It has to recede against whatever background the terminal has, and
+        # every colour in the palette is chosen to stand out rather than fade.
+        assert tui.C_DIM not in tui.PAIRS
 
 
 class TestClosingUp:

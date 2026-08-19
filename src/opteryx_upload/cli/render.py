@@ -48,12 +48,83 @@ ACTIONS = {
 }
 
 
+#: Alucard - the light counterpart to Dracula, and what the studio uses. One
+#: definition, read by both the printed output and the curses screen, so a
+#: warning is the same yellow wherever it appears.
+PALETTE = {
+    "purple": "#644AC9",
+    "magenta": "#A3144D",
+    "cyan": "#036A96",
+    "green": "#14710A",
+    "orange": "#A34D14",
+    "yellow": "#846E15",
+    "red": "#CB3A2A",
+}
+
+#: Where the palette lands on a terminal that only has sixteen colours. The
+#: nearest 256-colour index is computed; this is the last fallback under that.
+_BASIC = {
+    "purple": 35,
+    "magenta": 35,
+    "cyan": 36,
+    "green": 32,
+    "orange": 33,
+    "yellow": 33,
+    "red": 31,
+}
+
+
+def rgb(name: str):
+    """The palette entry as `(r, g, b)`."""
+    value = PALETTE[name].lstrip("#")
+    return tuple(int(value[at : at + 2], 16) for at in (0, 2, 4))
+
+
+def xterm256(name: str) -> int:
+    """The nearest xterm-256 index.
+
+    Truecolor is not universal and `init_color` needs a terminal that will let
+    its palette be rewritten, which most will not. A 256-colour index is the
+    thing that actually works everywhere, so the exact colour is resolved to the
+    closest one the terminal already has.
+
+    Both the cube and the grey ramp are searched: a near-grey like #846E15 is
+    not grey, but several of these sit close enough to the diagonal that the
+    ramp can win, and picking the cube blindly would drift the hue.
+    """
+    red, green, blue = rgb(name)
+
+    def cube_axis(value: int) -> int:
+        steps = (0, 95, 135, 175, 215, 255)
+        return min(range(6), key=lambda index: abs(steps[index] - value))
+
+    def cube_value(index: int) -> int:
+        return (0, 95, 135, 175, 215, 255)[index]
+
+    axes = [cube_axis(value) for value in (red, green, blue)]
+    cube = 16 + 36 * axes[0] + 6 * axes[1] + axes[2]
+    cube_distance = sum(
+        (cube_value(axis) - value) ** 2 for axis, value in zip(axes, (red, green, blue))
+    )
+
+    level = min(range(24), key=lambda index: abs((8 + index * 10) - (red + green + blue) // 3))
+    grey = 232 + level
+    grey_value = 8 + level * 10
+    grey_distance = sum((grey_value - value) ** 2 for value in (red, green, blue))
+
+    return cube if cube_distance <= grey_distance else grey
+
+
 class Style:
     """ANSI, or nothing at all.
 
     Off when stdout is not a terminal, so a redirected run is a clean diff, and
     off when NO_COLOR is set, because that is the convention and honouring it
     costs one line.
+
+    Truecolor when the terminal says it has it, a 256-colour index when it does
+    not, and the basic eight underneath that. The palette is fixed either way -
+    what changes is only how exactly the terminal can render it.
     """
 
     def __init__(self, enabled: Optional[bool] = None, stream=None) -> None:
@@ -66,27 +137,57 @@ class Style:
                 and os.environ.get("TERM") != "dumb"
             )
         self.enabled = bool(enabled)
+        self.depth = self._depth()
+
+    @staticmethod
+    def _depth() -> int:
+        if os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit"):
+            return 24
+        term = os.environ.get("TERM", "")
+        return 8 if ("256color" in term or "direct" in term) else 4
+
+    def _colour(self, name: str, text: str) -> str:
+        if not self.enabled:
+            return text
+        if self.depth == 24:
+            code = "38;2;{};{};{}".format(*rgb(name))
+        elif self.depth == 8:
+            code = f"38;5;{xterm256(name)}"
+        else:
+            code = str(_BASIC[name])
+        return f"\033[{code}m{text}\033[0m"
 
     def _wrap(self, code: str, text: str) -> str:
         return f"\033[{code}m{text}\033[0m" if self.enabled else text
 
     def dim(self, text: str) -> str:
+        # An attribute, not a colour: it has to stay legible on any background,
+        # and every palette entry here is chosen to stand out rather than recede.
         return self._wrap("2", text)
 
     def bold(self, text: str) -> str:
         return self._wrap("1", text)
 
     def red(self, text: str) -> str:
-        return self._wrap("31", text)
+        return self._colour("red", text)
 
     def yellow(self, text: str) -> str:
-        return self._wrap("33", text)
+        return self._colour("yellow", text)
+
+    def orange(self, text: str) -> str:
+        return self._colour("orange", text)
 
     def green(self, text: str) -> str:
-        return self._wrap("32", text)
+        return self._colour("green", text)
 
     def cyan(self, text: str) -> str:
-        return self._wrap("36", text)
+        return self._colour("cyan", text)
+
+    def purple(self, text: str) -> str:
+        return self._colour("purple", text)
+
+    def magenta(self, text: str) -> str:
+        return self._colour("magenta", text)
 
 
 def truncate(text: str, width: int = VALUE_WIDTH) -> str:
@@ -156,7 +257,9 @@ def plan_lines(
             return ""
         if entry.column in blocked:
             return style.red(note)
-        return style.yellow(note) if rewrites else style.dim(note)
+        # Orange for a column whose values are rewritten, yellow for a warning.
+        # They are different questions and they read as different colours.
+        return style.orange(note) if rewrites else style.dim(note)
 
     if not changing:
         header = f"  {'column'.ljust(name_width)}  {'sample'.ljust(value_width)}  type"
@@ -221,7 +324,7 @@ def contract_lines(contract, style: Optional[Style] = None) -> List[str]:
         "declared": "using the types you declared",
     }.get(mode, mode)
 
-    out = [f"  {style.bold(target_of(payload))}  {style.dim(destination)}"]
+    out = [f"  {style.purple(style.bold(target_of(payload)))}  {style.dim(destination)}"]
     if mode == "dataset":
         out.append(f"  {style.dim('writing')}   {payload.get('write', 'append')}")
     out.append("")

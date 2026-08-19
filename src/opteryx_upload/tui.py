@@ -40,6 +40,7 @@ from .cli.render import ACTIONS
 from .cli.render import human_bytes
 from .cli.render import human_rows
 from .cli.render import truncate
+from .cli.render import xterm256
 
 #: Frames of the one animation here. A spinner is the difference between "this
 #: is working" and "this has hung", and during a multi-gigabyte write that is
@@ -57,12 +58,31 @@ HELP_DONE = "n start another  h keys  q quit"
 
 # Colour pair numbers. Named because `curses.color_pair(4)` at the call site is
 # how a table ends up red for no reason six months from now.
+#
+# The colours themselves are Alucard, defined once in `cli/render.py` and read
+# by the printed output too - a warning is the same yellow whichever front end
+# you are looking at.
 C_DIM = 1
 C_HEAD = 2
 C_OK = 3
 C_WARN = 4
 C_BAD = 5
 C_SEL = 6
+C_ACCENT = 7
+C_ALT = 8
+
+#: pair -> palette name. C_DIM is deliberately absent: it is the A_DIM
+#: attribute, not a colour, so it recedes against whatever the terminal's
+#: background happens to be.
+PAIRS = {
+    C_HEAD: "purple",
+    C_OK: "green",
+    C_WARN: "yellow",
+    C_BAD: "red",
+    C_SEL: "cyan",
+    C_ACCENT: "magenta",
+    C_ALT: "orange",
+}
 
 
 class Job:
@@ -315,19 +335,31 @@ def _message_for(error: BaseException) -> str:
 
 
 def _setup_colors(curses) -> bool:
+    """Put the palette on the screen as exactly as the terminal allows.
+
+    `init_color` would set the exact RGB, but it needs a terminal willing to
+    have its palette rewritten and most are not - and the ones that are would
+    then render every OTHER program in the changed colours. So the nearest of
+    the 256 the terminal already has, and the basic eight under that.
+    """
     if not curses.has_colors():
         return False
     curses.start_color()
     curses.use_default_colors()
-    for pair, colour in (
-        (C_DIM, curses.COLOR_BLUE),
-        (C_HEAD, curses.COLOR_CYAN),
-        (C_OK, curses.COLOR_GREEN),
-        (C_WARN, curses.COLOR_YELLOW),
-        (C_BAD, curses.COLOR_RED),
-        (C_SEL, curses.COLOR_CYAN),
-    ):
-        curses.init_pair(pair, colour, -1)
+
+    exact = getattr(curses, "COLORS", 0) >= 256
+    basic = {
+        "purple": curses.COLOR_MAGENTA,
+        "magenta": curses.COLOR_MAGENTA,
+        "cyan": curses.COLOR_CYAN,
+        "green": curses.COLOR_GREEN,
+        "orange": curses.COLOR_YELLOW,
+        "yellow": curses.COLOR_YELLOW,
+        "red": curses.COLOR_RED,
+    }
+    for pair, name in PAIRS.items():
+        curses.init_pair(pair, xterm256(name) if exact else basic[name], -1)
+    curses.init_pair(C_DIM, -1, -1)
     return True
 
 
@@ -347,7 +379,12 @@ class Screen:
         self.row = 0
 
     def attr(self, pair: int = 0, bold: bool = False) -> int:
-        value = self.curses.color_pair(pair) if (self.colour and pair) else 0
+        if pair == C_DIM:
+            # An attribute rather than a colour, so it recedes against whatever
+            # background the terminal has instead of guessing at one.
+            value = self.curses.A_DIM
+        else:
+            value = self.curses.color_pair(pair) if (self.colour and pair) else 0
         return value | (self.curses.A_BOLD if bold else 0)
 
     def line(self, text: str = "", pair: int = 0, bold: bool = False, row: Optional[int] = None):
@@ -583,7 +620,7 @@ def _draw_plan(app: App, screen: Screen) -> None:
                 row,
                 column,
                 detail,
-                C_BAD if entry.column in blocked else (C_WARN if rewrites else C_DIM),
+                C_BAD if entry.column in blocked else (C_ALT if rewrites else C_DIM),
             )
 
 
@@ -871,10 +908,13 @@ class Browser:
         self.error = ""
         self.entries: List[Tuple[str, str, str]] = []
         self.scan()
-        self._rest_somewhere_useful()
 
     def scan(self) -> None:
         """Read the directory: parents first, then directories, then files.
+
+        The cursor sits on the top row of whatever this returns. Every arrival
+        looks the same, so `a` then down-down-space means the same thing in
+        every directory rather than depending on what happens to be in it.
 
         A file the service cannot read is listed and not selectable rather than
         hidden. Hiding it answers "where is my data" with an empty directory,
@@ -923,31 +963,13 @@ class Browser:
         self.path = entry[1]
         self.cursor = 0
         self.scan()
-        self._rest_somewhere_useful()
-
-    def _rest_somewhere_useful(self) -> None:
-        """Land on the first thing worth choosing, not on `..`.
-
-        Arriving with the cursor on the way out is how every keystroke in a
-        directory starts with pressing down.
-        """
-        for index, (_name, _full, kind) in enumerate(self.entries):
-            if kind == FILE:
-                self.cursor = index
-                return
-        self.cursor = 1 if len(self.entries) > 1 else 0
 
     def up(self) -> None:
         parent = os.path.dirname(self.path)
         if parent and parent != self.path:
-            here = self.path
             self.path = parent
+            self.cursor = 0
             self.scan()
-            # Land on the directory just left, not at the top of a long list.
-            for index, (_name, full, kind) in enumerate(self.entries):
-                if kind == DIR and os.path.normpath(full) == os.path.normpath(here):
-                    self.cursor = index
-                    break
 
     # ---- choosing --------------------------------------------------------
 

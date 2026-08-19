@@ -278,6 +278,66 @@ class TestPlanTable:
         assert "\033[" in render.Style(True).red("x")
 
 
+class TestPalette:
+    """Alucard, defined once and read by both front ends.
+
+    A warning that is one yellow in the printed output and another on the
+    screen is two palettes maintained by hand.
+    """
+
+    def test_the_colours_are_the_ones_that_were_asked_for(self):
+        assert render.PALETTE == {
+            "purple": "#644AC9",
+            "magenta": "#A3144D",
+            "cyan": "#036A96",
+            "green": "#14710A",
+            "orange": "#A34D14",
+            "yellow": "#846E15",
+            "red": "#CB3A2A",
+        }
+
+    def test_truecolor_sends_the_exact_value(self, monkeypatch):
+        monkeypatch.setenv("COLORTERM", "truecolor")
+        assert "38;2;203;58;42" in render.Style(True).red("x")
+
+    def test_a_256_colour_terminal_gets_the_nearest_index(self, monkeypatch):
+        monkeypatch.delenv("COLORTERM", raising=False)
+        monkeypatch.setenv("TERM", "xterm-256color")
+        assert f"38;5;{render.xterm256('red')}" in render.Style(True).red("x")
+
+    def test_an_older_terminal_still_gets_a_colour(self, monkeypatch):
+        # The palette is fixed; what changes is how exactly it can be rendered.
+        monkeypatch.delenv("COLORTERM", raising=False)
+        monkeypatch.setenv("TERM", "xterm")
+        assert "\033[31m" in render.Style(True).red("x")
+
+    def test_every_entry_resolves_to_a_distinct_index(self):
+        # Two palette entries collapsing to one index would silently merge two
+        # meanings on any terminal without truecolor.
+        indices = [render.xterm256(name) for name in render.PALETTE]
+        assert len(set(indices)) == len(indices)
+
+    def test_the_indices_are_inside_the_256_colour_range(self):
+        assert all(16 <= render.xterm256(name) <= 255 for name in render.PALETTE)
+
+    def test_converted_and_warning_are_different_colours(self, monkeypatch):
+        # They answer different questions: one rewrites values, one does not.
+        monkeypatch.setenv("COLORTERM", "truecolor")
+        style = render.Style(True)
+        assert style.orange("x") != style.yellow("x")
+
+    def test_on_eight_colours_some_of_them_have_to_collapse(self, monkeypatch):
+        # There is no orange in the basic eight, and no second purple. Saying
+        # so here rather than pretending the palette survives everywhere.
+        monkeypatch.delenv("COLORTERM", raising=False)
+        monkeypatch.setenv("TERM", "xterm")
+        style = render.Style(True)
+        assert style.orange("x") == style.yellow("x")
+        assert style.purple("x") == style.magenta("x")
+        # what must not collapse, at any depth
+        assert style.red("x") != style.yellow("x") != style.green("x")
+
+
 class TestCommands:
     @responses.activate
     def test_plan_prints_and_abandons(self, env, csv_file):
