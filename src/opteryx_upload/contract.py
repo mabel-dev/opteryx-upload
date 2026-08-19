@@ -138,6 +138,45 @@ class Contract:
         written = self._payload.get("written") or []
         return written[-1] if written else {}
 
+    def write_bytes(
+        self,
+        data: bytes,
+        name: str,
+        *,
+        content_type: str = "application/octet-stream",
+        content_encoding: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Upload one part held in memory. Returns what it turned out to be.
+
+        For a producer whose parts never touch disk. `name` becomes the
+        `x-file-name` header and carries the format the way a path does, codec
+        suffix included - `part-0000.ndjson.zst` is NDJSON that happens to be
+        zstd, and the service decodes it.
+
+        `content_type` is sent as given, so a caller that knows it is sending
+        `application/x-ndjson` gives the service a second, independent way to
+        get the format right: if the name is ever wrong or missing, the media
+        type still answers.
+
+        `content_encoding` is derived from the name when not given - `.zst` is
+        zstd, `.br` is brotli. It matters because gzip and zstd are
+        identifiable from their leading bytes and brotli and raw DEFLATE are
+        not: without the header a brotli part is handed to the reader
+        undecoded. Pass it explicitly for a name that does not carry the codec.
+
+        Identical to `write` in what it refuses and what it raises - same
+        request, same `ValueNotCastable` naming the column, row and value, on
+        this call rather than at commit. `write` is not this with a `read()` in
+        front of it: streaming a four gigabyte file from disk is right and
+        stays.
+        """
+        payload = self._client._write_bytes(
+            self.contract_id, data, name, content_type, content_encoding
+        )
+        self._replace(payload)
+        written = self._payload.get("written") or []
+        return written[-1] if written else {}
+
     def write_all(self, paths: Iterable[str], progress=None) -> "Contract":
         for path in paths:
             self.write(path, progress=progress)
