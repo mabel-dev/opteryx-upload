@@ -10,6 +10,7 @@ contract that could still be abandoned.
 from __future__ import annotations
 
 import curses
+import pathlib
 import time
 
 import pytest
@@ -231,6 +232,86 @@ class TestKeys:
         tui.handle(app, ord("q"), window=None, curses_module=curses)
         assert app.quit is True
         settle(app)
+
+
+class TestSigningIn:
+    """The screen asks for a personal access token, and never for a JWT.
+
+    An access token is good for minutes, so a field asking for one holds a value
+    that has expired by the time the upload it authorises gets going. The PAT is
+    exchanged for a fresh assertion and re-exchanged as it ages.
+    """
+
+    def test_the_prompt_asks_for_a_pat_and_nothing_else(self):
+        source = pathlib.Path(tui.__file__).read_text()
+        code = "\n".join(
+            line for line in source.splitlines() if not line.strip().startswith("#")
+        )
+        block = code[code.index('elif key == ord("c")'):code.index('elif key == ord("t")')]
+        assert "access token id:" in block
+        assert "secret:" in block
+        # no field for a bearer assertion, under any of its names
+        for invented in ("jwt", "JWT", "bearer", "Bearer"):
+            assert invented not in block
+
+    def test_a_missing_credential_opens_the_screen_rather_than_closing_it(self):
+        # `push` has nowhere to ask so it has to refuse; here there is a prompt.
+        app = tui.App(None, ["a.csv"], "acme.security.findings", "https://upload.test")
+        assert "press c" in app.status
+        app.negotiate()
+        assert app.job is None
+        assert "not signed in" in app.error
+
+    def test_signing_in_exchanges_the_secret_before_anything_depends_on_it(self, monkeypatch):
+        # A mistyped secret should be a line on the status bar now, not a 401 in
+        # the middle of negotiating.
+        exchanged = []
+
+        class FakeAuthClient:
+            def __init__(self):
+                self._token = lambda: exchanged.append("exchanged") or "jwt"
+
+            def negotiate(self, *a, **k):
+                return None
+
+        monkeypatch.setattr(
+            tui.config, "build_client", lambda **kwargs: FakeAuthClient()
+        )
+        app, _ = app_with()
+        app.client = None
+        app.sign_in("pat_abc", "secret")
+        settle(app)
+        assert exchanged == ["exchanged"]
+        assert app.client is not None
+        assert app.account == "pat_abc"
+
+    def test_a_bad_secret_leaves_it_signed_out(self, monkeypatch):
+        def refuse(**kwargs):
+            raise tui.UploadClientError("that id and secret do not match")
+
+        monkeypatch.setattr(tui.config, "build_client", refuse)
+        app, _ = app_with()
+        app.client = None
+        app.sign_in("pat_abc", "wrong")
+        settle(app)
+        assert app.client is None
+        assert "do not match" in app.error
+
+    def test_the_id_is_shown_and_the_secret_is_never_kept(self, monkeypatch):
+        class FakeAuthClient:
+            def __init__(self):
+                self._token = lambda: "jwt"
+
+            def negotiate(self, *a, **k):
+                return None
+
+        monkeypatch.setattr(tui.config, "build_client", lambda **kwargs: FakeAuthClient())
+        app, _ = app_with()
+        app.client = None
+        app.sign_in("pat_abc", "opt_secret_01")
+        settle(app)
+        assert app.account == "pat_abc"
+        assert "opt_secret_01" not in repr(vars(app))
 
 
 class TestClosingUp:

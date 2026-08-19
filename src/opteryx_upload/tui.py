@@ -44,7 +44,7 @@ SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 #: climbs, slow enough to be free.
 TICK_MS = 90
 
-HELP_IDLE = "a add  d remove  t target  n negotiate  q quit"
+HELP_IDLE = "a add  d remove  t target  c account  n negotiate  q quit"
 HELP_PLAN = "↑↓ column  e retype  x ignore  ⏎ accept  u upload  r re-plan  q quit"
 HELP_READY = "↑↓ column  e retype  x ignore  u upload  r re-plan  q quit"
 HELP_DONE = "n start another  q quit"
@@ -92,17 +92,36 @@ class Job:
 class App:
     """All the state on screen, and the keys that change it."""
 
-    def __init__(self, client, files: List[str], target: str, base_url: str) -> None:
+    def __init__(
+        self,
+        client,
+        files: List[str],
+        target: str,
+        base_url: str,
+        account: str = "",
+        url: Optional[str] = None,
+    ) -> None:
         self.client = client
+        #: What was passed as --url, kept so a sign-in from inside the screen
+        #: reaches the same service the rest of the session is talking to.
+        self.url = url
+        #: What the account line shows. A personal access token's id, which is
+        #: not a secret, or empty when nobody has signed in yet.
+        self.account = account
         self.base_url = base_url
         self.files: List[str] = list(files)
         self.target = target or ""
         self.contract = None
         self.ignored: List[str] = []
         self.cursor = 0
-        self.status = "add files, name a destination, then negotiate"
+        self.status = (
+            "add files, name a destination, then negotiate"
+            if client is not None
+            else "not signed in - press c"
+        )
         self.error = ""
         self.job: Optional[Job] = None
+        self._signing_in: Optional[str] = None
         self.frame = 0
         self.done: Optional[str] = None
         self.quit = False
@@ -117,7 +136,29 @@ class App:
     def state(self) -> str:
         return self.contract.state if self.contract is not None else ""
 
+    def sign_in(self, client_id: str, client_secret: str, url: Optional[str] = None) -> None:
+        """Take a personal access token and check it before anything depends on it.
+
+        The exchange is done here rather than left until the first request, so a
+        mistyped secret is a line on the status bar now instead of a 401 in the
+        middle of negotiating.
+        """
+        def work(job):
+            client = config.build_client(
+                url=url, client_id=client_id, client_secret=client_secret
+            )
+            # `_token` is the authenticator; calling it performs the exchange,
+            # which is the only thing that can tell us the secret is right.
+            client._token()
+            return client
+
+        self._signing_in = client_id
+        self.job = Job("signing in", work)
+
     def negotiate(self) -> None:
+        if self.client is None:
+            self.error = "not signed in - press c"
+            return
         if not self.files:
             self.error = "no files yet - press a"
             return
@@ -189,6 +230,12 @@ class App:
             return
         self.error = ""
         result = job.result
+        if getattr(self, "_signing_in", None) and hasattr(result, "negotiate"):
+            self.client = result
+            self.account = self._signing_in
+            self._signing_in = None
+            self.status = _status_for(self.contract)
+            return
         if hasattr(result, "commit_id"):
             self.done = (
                 f"committed {human_rows(result.rows_written or 0)} rows to "
@@ -322,6 +369,14 @@ def draw(app: App, window, curses_module, colour: bool) -> None:
             screen.line(f" {marker} {os.path.basename(path).ljust(width)}  {human_bytes(size)}")
     screen.line()
 
+    # ---- who you are
+    screen.line(" ACCOUNT", C_DIM)
+    if app.client is None:
+        screen.line("   not signed in - press c", C_WARN)
+    else:
+        screen.line(f"   {app.account or 'signed in'}", C_DIM)
+    screen.line()
+
     # ---- destination
     screen.line(" TO", C_DIM)
     screen.line(f"   {app.target or '(not set - press t)'}", 0, bold=bool(app.target))
@@ -360,7 +415,9 @@ def draw(app: App, window, curses_module, colour: bool) -> None:
     pair = C_BAD if app.error else (C_OK if app.done else 0)
     screen.line(f" {status}", pair, row=screen.height - 2)
 
-    if app.contract is None:
+    if app.client is None:
+        keys = "c sign in  q quit"
+    elif app.contract is None:
         keys = HELP_IDLE
     elif app.contract.state == "committed":
         keys = HELP_DONE
@@ -426,19 +483,28 @@ def _draw_plan(app: App, screen: Screen) -> None:
 # ---------------------------------------------------------------------------
 
 
-def prompt(window, curses_module, label: str, initial: str = "") -> Optional[str]:
+def prompt(
+    window,
+    curses_module,
+    label: str,
+    initial: str = "",
+    mask: bool = False,
+) -> Optional[str]:
     """Read a line on the status row. Escape returns None, which means cancel.
 
     Ctrl-U clears it. A pre-filled field with no way to empty it is a field you
     have to backspace across before you can use it, which is most of why the
     retype prompt puts the current type in the label instead.
+
+    `mask` hides what is typed, for a secret being read off a password manager
+    over somebody's shoulder.
     """
     height, width = window.getmaxyx()
     text = initial
     curses_module.curs_set(1)
     try:
         while True:
-            shown = f" {label} {text}"
+            shown = f" {label} {'•' * len(text) if mask else text}"
             try:
                 window.addnstr(height - 2, 0, shown.ljust(width - 1), width - 1)
                 window.move(height - 2, min(len(shown), width - 2))
@@ -488,6 +554,15 @@ def handle(app: App, key: int, window, curses_module) -> None:
     elif key == ord("d") and app.contract is None and app.files:
         app.files.pop(min(app.cursor, len(app.files) - 1))
         app.cursor = min(app.cursor, max(len(app.files) - 1, 0))
+    elif key == ord("c"):
+        # A personal access token, and only that. An access token is good for
+        # minutes, so a field asking for one is a field whose contents have
+        # expired by the time the upload it authorises gets going.
+        client_id = prompt(window, curses_module, "access token id:", app.account)
+        if client_id:
+            secret = prompt(window, curses_module, "secret:", mask=True)
+            if secret:
+                app.sign_in(client_id, secret, app.url)
     elif key == ord("t"):
         answer = prompt(window, curses_module, "to:", app.target)
         if answer is not None:
@@ -556,14 +631,29 @@ def run(args) -> int:
         )
         return config.USAGE
 
-    client = config.build_client(
-        url=args.url,
-        token=args.token,
-        client_id=args.client_id,
-        client_secret=args.client_secret,
-    )
+    # Missing credentials open the screen rather than closing it. `push` has
+    # nowhere to ask, so it has to refuse; here there is a prompt, and exiting
+    # to tell somebody to set two environment variables when we could just ask
+    # them is the worse of the two.
+    try:
+        client = config.build_client(
+            url=args.url,
+            token=args.token,
+            client_id=args.client_id,
+            client_secret=args.client_secret,
+        )
+    except config.ConfigError:
+        client = None
+    account = args.client_id or os.environ.get(config.ENV_CLIENT_ID) or ""
     files = [path for path in (getattr(args, "files", None) or []) if os.path.isfile(path)]
-    app = App(client, files, getattr(args, "to", "") or "", config.base_url(args.url))
+    app = App(
+        client,
+        files,
+        getattr(args, "to", "") or "",
+        config.base_url(args.url),
+        account=account if client is not None else "",
+        url=args.url,
+    )
 
     try:
         curses.wrapper(_loop, app, curses)

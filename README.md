@@ -144,8 +144,15 @@ row under the cursor.
  ↑↓ column  e retype  x ignore  ⏎ accept  u upload  r re-plan  q quit
 ```
 
-`a` adds a file, `t` sets the destination, `n` negotiates, `x` drops a column,
-`u` uploads and commits. Requests run on a worker thread and the screen keeps
+`c` signs in, `a` adds a file, `t` sets the destination, `n` negotiates, `x`
+drops a column, `u` uploads and commits.
+
+Starting it with no credentials opens the screen rather than refusing: press `c`
+and it asks for a personal access token - the id, then the secret, which is
+masked as you type. It exchanges them straight away, so a mistyped secret is a
+line on the status bar rather than a 401 half way through negotiating. It never
+asks for a bearer JWT. The id and secret are held for the session and not
+written anywhere; set them in the environment to skip the prompt. Requests run on a worker thread and the screen keeps
 redrawing while they do, so a multi-gigabyte write shows a byte counter rather
 than a frozen terminal. Quitting with a contract still open abandons it - nothing
 written was ever readable, so there is nothing to undo.
