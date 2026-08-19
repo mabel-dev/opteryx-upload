@@ -41,7 +41,7 @@ from .schema import Issue as SchemaIssue
 from .schema import PlanEntry
 from .schema import Schema
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "UploadClient",
