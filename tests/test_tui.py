@@ -143,6 +143,20 @@ class TestJobs:
             time.sleep(0.005)
         assert isinstance(job.error, RuntimeError)
 
+    def test_a_commit_with_no_snapshot_id_still_reads_as_a_sentence(self):
+        # Production ended on "as" when the id came back empty, which reads as a
+        # truncated message rather than as a missing field.
+        contract = FakeContract(state="accepted")
+        contract.commit = lambda: type(
+            "Result", (), {"rows_written": 10000, "table": "personal.bastian.fksnd",
+                           "commit_id": ""}
+        )()
+        app, _ = app_with(contract, files=("a.csv",))
+        app.contract = contract
+        settle(app.upload() or app)
+        assert app.done == "committed 10,000 rows to personal.bastian.fksnd"
+        assert not app.done.endswith("as")
+
     def test_upload_writes_every_file_then_commits(self):
         contract = FakeContract(state="accepted")
         app, _ = app_with(contract, files=("a.csv", "b.csv"))

@@ -321,7 +321,8 @@ def command_push(args, out, err) -> int:
             f"{result.files_created} file{'' if result.files_created == 1 else 's'}",
             file=out,
         )
-        print(f"  {style.dim('snapshot')}   {result.commit_id}", file=out)
+        if result.commit_id:
+            print(f"  {style.dim('snapshot')}   {result.commit_id}", file=out)
     return config.OK
 
 

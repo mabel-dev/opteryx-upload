@@ -270,9 +270,13 @@ class App:
             self.status = _status_for(self.contract)
             return
         if hasattr(result, "commit_id"):
+            # The id is a clause, not the sentence. Without this the line ended
+            # on "as" when the service could not name the snapshot, which reads
+            # as a truncated message rather than as a missing field.
+            named = f" as {result.commit_id}" if result.commit_id else ""
             self.done = (
                 f"committed {human_rows(result.rows_written or 0)} rows to "
-                f"{result.table} as {result.commit_id}"
+                f"{result.table}{named}"
             )
             self.status = self.done
             return
