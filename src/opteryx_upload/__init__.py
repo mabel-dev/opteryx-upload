@@ -16,6 +16,7 @@ from .exceptions import ContractNotFound
 from .exceptions import ContractStale
 from .exceptions import DatasetExists
 from .exceptions import FormatUnreadable
+from .exceptions import InternalError
 from .exceptions import NotAuthorized
 from .exceptions import PayloadTooLargeError
 from .exceptions import ProposalChanged
@@ -65,6 +66,7 @@ __all__ = [
     "AlreadyCommitted",
     "DatasetExists",
     "FormatUnreadable",
+    "InternalError",
     "NotAuthorized",
     "ContractNotFound",
     "PATAuthenticator",

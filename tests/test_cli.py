@@ -433,6 +433,50 @@ class TestCommands:
         assert cli._is_a_terminal(Fake(True)) is False
 
 
+class TestWhenTheServiceBreaks:
+    """A 500 used to arrive with `content-length: 0` and print as `500: `."""
+
+    @responses.activate
+    def test_an_internal_failure_shows_what_it_said_and_its_reference(self, env, csv_file):
+        responses.add(
+            responses.POST,
+            f"{BASE_URL}/v2/contracts",
+            json={"error": {"code": "internal",
+                            "message": "ValueError: Unsupported schema type",
+                            "reference": "9f75bf3d"}},
+            status=500,
+        )
+        code, _out, err = run(["plan", csv_file, "--to", "acme.security.findings", "--no-color"])
+        assert "Unsupported schema type" in err
+        assert "9f75bf3d" in err
+        # Not a refusal: retrying a refusal never helps and retrying this often
+        # does, so they must not share a number.
+        assert code == config.UNAVAILABLE
+        assert config.UNAVAILABLE != config.REFUSED
+
+    @responses.activate
+    def test_a_body_that_is_empty_reads_as_something(self, env, csv_file):
+        # `f"{status}: {text}"` is a colon and a shrug when the body is empty,
+        # and a proxy in front of the service can produce exactly that.
+        responses.add(responses.POST, f"{BASE_URL}/v2/contracts", body="", status=500)
+        code, _out, err = run(["plan", csv_file, "--to", "acme.security.findings", "--no-color"])
+        assert "500" in err
+        assert "no body" in err
+        assert code != config.OK
+
+    @responses.activate
+    def test_an_html_error_page_is_trimmed_not_pasted_into_the_terminal(self, env, csv_file):
+        responses.add(
+            responses.POST,
+            f"{BASE_URL}/v2/contracts",
+            body="<html>" + ("x" * 5000) + "</html>",
+            status=502,
+        )
+        _code, _out, err = run(["plan", csv_file, "--to", "acme.security.findings", "--no-color"])
+        assert len(err) < 800
+        assert "502" in err
+
+
 class TestValuesSurvive:
     """The sampled value is what makes a wrong type obvious. Losing it is a bug.
 

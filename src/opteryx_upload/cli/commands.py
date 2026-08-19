@@ -26,6 +26,7 @@ from typing import Sequence
 
 from .. import __version__
 from ..exceptions import ContractError
+from ..exceptions import InternalError
 from ..exceptions import UploadClientError
 from ..models import Target
 from ..schema import Schema
@@ -597,7 +598,9 @@ def _report_contract_error(error: ContractError, err, style: Style) -> None:
     row number is somewhere to look.
     """
     print(f"{PROGRAM}: {style.red(error.message)}", file=err)
-    for key in ("column", "row", "value", "declared", "written_rows", "target"):
+    if isinstance(error, InternalError):
+        print(style.dim("  the upload service logged this; nothing was published"), file=err)
+    for key in ("column", "row", "value", "declared", "written_rows", "target", "reference"):
         value = error.fields.get(key)
         if value not in (None, ""):
             print(f"  {style.dim(key.ljust(12))} {value}", file=err)

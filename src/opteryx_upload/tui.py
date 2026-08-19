@@ -290,9 +290,18 @@ def _status_for(contract) -> str:
 
 
 def _message_for(error: BaseException) -> str:
+    """The message plus whichever field makes it something to act on.
+
+    A column and a row for a value that will not cast; a reference for a
+    failure inside the service, because that is the id its traceback was logged
+    against and it is the only part of an internal error a caller can use.
+    """
     message = getattr(error, "message", None) or str(error)
     column = getattr(error, "column", None)
     row = getattr(error, "row", None)
+    reference = getattr(error, "reference", None)
+    if reference:
+        return f"{message} (reference {reference})"
     if column and row is not None:
         return f"{message} (column {column}, row {row})"
     if column:

@@ -20,6 +20,7 @@ from ..exceptions import AuthenticationError
 from ..exceptions import AuthorizationError
 from ..exceptions import ContractError
 from ..exceptions import ContractStale
+from ..exceptions import InternalError
 from ..exceptions import NotAuthorized
 from ..exceptions import UploadClientError
 
@@ -45,6 +46,11 @@ INTERRUPTED = 130
 
 def exit_code_for(error: BaseException) -> int:
     """Map an exception to the number the shell sees."""
+    if isinstance(error, InternalError):
+        # The service broke, which is not the upload being refused. Retrying a
+        # refusal never helps and retrying this often does, so they must not
+        # share a number.
+        return UNAVAILABLE
     if isinstance(error, ContractStale):
         return STALE
     if isinstance(error, (NotAuthorized, AuthenticationError, AuthorizationError)):

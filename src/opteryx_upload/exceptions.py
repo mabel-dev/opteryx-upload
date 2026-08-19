@@ -161,6 +161,20 @@ class ContractNotFound(ContractError):
     code = "contract_not_found"
 
 
+class InternalError(ContractError):
+    """The service failed to handle the request at all.
+
+    Carries `reference`, which is the id the traceback was logged against - so
+    "it said internal, reference 9f75bf3d" finds the exact request rather than
+    starting a conversation about what time it was and roughly what you did.
+
+    Not a refusal: nothing about the upload was judged and wrong, so retrying is
+    reasonable in a way it never is for a value that will not cast.
+    """
+
+    code = "internal"
+
+
 #: code -> class. Anything not here becomes a plain ContractError, so a service
 #: that grows a new code does not crash a client that has not been upgraded.
 CONTRACT_ERRORS = {
@@ -180,6 +194,7 @@ CONTRACT_ERRORS = {
         FormatUnreadable,
         NotAuthorized,
         ContractNotFound,
+        InternalError,
     )
 }
 

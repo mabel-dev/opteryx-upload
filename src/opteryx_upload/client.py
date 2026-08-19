@@ -506,11 +506,28 @@ class ContractClient(UploadClient):
         try:
             payload = response.json()
         except ValueError:
-            raise UploadClientError(f"{response.status_code}: {response.text}") from None
+            raise UploadClientError(_unreadable(response), status_code=response.status_code) from None
         if isinstance(payload, dict) and "error" in payload:
             raise error_for_contract(payload)
         raise error_for_response(response.status_code, payload.get("detail", response.text))
 
+
+
+def _unreadable(response) -> str:
+    """A failure with nothing usable in it, said in a way that helps anyway.
+
+    `f"{status}: {text}"` reads as "500: " when the body is empty, which is a
+    colon and a shrug. A proxy or a load balancer between the client and the
+    service can produce exactly that, or an HTML page nobody wants in a
+    terminal, so this says which happened and keeps the status where a person
+    can see it.
+    """
+    body = (response.text or "").strip()
+    if not body:
+        return f"the upload service answered {response.status_code} with no body"
+    if len(body) > 400:
+        body = body[:400] + "…"
+    return f"{response.status_code}: {body}"
 
 
 class _CountingReader:

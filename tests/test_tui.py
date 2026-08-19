@@ -576,3 +576,10 @@ class TestStatus:
         error = type("E", (), {"message": "cannot hold 'x' as IPV4", "column": "ip", "row": 41207})()
         assert "ip" in tui._message_for(error)
         assert "41207" in tui._message_for(error)
+
+    def test_a_failure_inside_the_service_carries_its_reference(self):
+        # The only part of an internal error a caller can use: it is the id the
+        # traceback was logged against.
+        error = type("E", (), {"message": "RuntimeError: firestore timed out",
+                               "reference": "9f75bf3d"})()
+        assert "9f75bf3d" in tui._message_for(error)
