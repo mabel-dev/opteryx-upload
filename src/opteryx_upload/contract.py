@@ -123,21 +123,24 @@ class Contract:
 
     # ---- doing it --------------------------------------------------------
 
-    def write(self, path: str) -> Dict[str, Any]:
+    def write(self, path: str, progress=None) -> Dict[str, Any]:
         """Upload one file. Returns what it turned out to be.
 
         Raises `ValueNotCastable` naming the column, row and value if something
         in the file cannot be stored as the column it was promised to - on this
         call, not at commit after everything has been sent.
+
+        `progress(sent, total)` is called as the bytes leave, for a caller with
+        somewhere to draw it.
         """
-        payload = self._client._write(self.contract_id, path)
-        self._payload = payload
-        written = payload.get("written") or []
+        payload = self._client._write(self.contract_id, path, progress=progress)
+        self._replace(payload)
+        written = self._payload.get("written") or []
         return written[-1] if written else {}
 
-    def write_all(self, paths: Iterable[str]) -> "Contract":
+    def write_all(self, paths: Iterable[str], progress=None) -> "Contract":
         for path in paths:
-            self.write(path)
+            self.write(path, progress=progress)
         return self
 
     def commit(self, message: Optional[str] = None, idempotency_key: Optional[str] = None):
@@ -149,7 +152,8 @@ class Contract:
         from .models import CommitResult
 
         payload = self._client._commit(self.contract_id, message, idempotency_key)
-        self._payload = payload
+        self._replace(payload)
+        payload = self._payload
         return CommitResult(
             table=self._table(),
             commit_id=payload.get("snapshot"),
@@ -173,5 +177,15 @@ class Contract:
         )
 
     def _replace(self, payload: Dict[str, Any]) -> "Contract":
+        """Take a fresh payload, keeping what only the first response could carry.
+
+        The sampled values are computed from the uploaded samples, so only the
+        negotiation can answer them - a PATCH re-plans against bytes the service
+        no longer holds. Dropping them would blank the one column that makes a
+        wrong type obvious, and it would blank it exactly when somebody is in
+        the middle of correcting one.
+        """
+        if "values" not in payload and "values" in self._payload:
+            payload = dict(payload, values=self._payload["values"])
         self._payload = payload
         return self

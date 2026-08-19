@@ -16,6 +16,132 @@ which the SDK then selects automatically:
 pip install "opteryx-upload[zstd]"
 ```
 
+## The command line
+
+Installing the package puts `opteryx-upload` on your PATH.
+
+```bash
+export OPTERYX_TOKEN="<jwt>"          # or OPTERYX_CLIENT_ID + OPTERYX_CLIENT_SECRET
+opteryx-upload push findings.csv --to acme.security.findings
+```
+
+You are not asked where the schema comes from, because the destination answers
+it. A dataset that already declares its columns supplies them, and the only
+question left is whether these rows are added or replace what is there. A
+dataset that does not exist yet has its types read from your data and shows them
+to you before anything is written:
+
+```
+  findings.csv  686.5 KB
+
+  acme.security.findings  new, types read from your data
+
+  column     sample                type
+  cve_id     CVE-2026-00001        VARCHAR
+  published  2026-08-02T04:22:07Z  VARCHAR
+  source_ip  10.1.7.13             VARCHAR
+  hosts      1                     INT64
+
+  these types were read from your data
+  accept [enter]   change column=TYPE   drop -column   stop q
+  > published=TIMESTAMP source_ip=IPV4
+```
+
+Nothing is uploaded until that is settled. `published` and `source_ip` are the
+reason: a CSV cannot say that a column of dotted quads is an address, and once
+it is catalogued as VARCHAR no amount of reading the data back will tell you it
+was wrong.
+
+### In a pipeline
+
+There is no terminal to show the table to, so inference has to be authorised in
+advance - `--yes` accepts what was read from the data, and `--declare` says the
+types outright. A `push` with neither is refused rather than guessed at.
+
+```bash
+opteryx-upload push data/*.parquet --to acme.security.findings \
+    --type published=TIMESTAMP --type source_ip=IPV4 \
+    --message "nightly load" --yes
+```
+
+`plan` does the same negotiation, prints the table and abandons the contract, so
+it uploads nothing and leaves nothing behind:
+
+```bash
+opteryx-upload plan data/*.parquet --to acme.security.findings --json
+```
+
+Exit codes are part of the interface, because a pipeline that has to grep stderr
+will eventually retry the wrong thing:
+
+| code | meaning | retrying |
+|---|---|---|
+| 0 | committed | - |
+| 2 | bad arguments, missing file, no credentials | no |
+| 3 | the service refused it: a value that will not cast, files that disagree | no |
+| 4 | the target moved after the contract was agreed | yes |
+| 5 | not signed in, or not permitted to write here | no |
+| 6 | the service could not be reached | yes |
+| 130 | interrupted | - |
+
+### Options
+
+| | |
+|---|---|
+| `--to WORKSPACE.COLLECTION.DATASET` | where the rows go (required) |
+| `--append` / `--overwrite` | for a dataset that exists; asked if you are at a terminal |
+| `--type COLUMN=TYPE` | correct one type without a prompt; repeatable |
+| `--ignore COLUMN` | read this column and do not write it; repeatable |
+| `--infer` / `--use-dataset` / `--declare COLUMN:TYPE` | override the destination's answer |
+| `-y`, `--yes` | accept inferred types unasked; required off a terminal |
+| `--json` | the contract as the service sent it |
+
+Credentials come from `OPTERYX_TOKEN`, or `OPTERYX_CLIENT_ID` and
+`OPTERYX_CLIENT_SECRET` for a personal access token, and the service from
+`OPTERYX_UPLOAD_URL`. Each has a flag if you would rather pass it.
+
+## The full-screen version
+
+```bash
+opteryx-upload tui findings.csv --to acme.security.findings
+```
+
+Same contract, same calls - what it adds is that the table stays put. At a
+scrolling prompt the plan goes past once and correcting a type means retyping
+the whole command; here the cursor moves down it and `e` changes the type of the
+row under the cursor.
+
+```
+ opteryx upload                                              http://upload.opteryx.app
+
+ FILES
+   findings.csv       686.5 KB
+   findings_more.csv  457.7 KB
+
+ TO
+   acme.security.findings
+
+ PLAN   a new dataset; these types were read from your data
+   column     sample                type
+   cve_id     CVE-2026-00001        VARCHAR
+   published  2026-08-02T04:22:07Z  TIMESTAMP[us]   was VARCHAR, converted
+ › source_ip  10.1.7.13             IPV4            was VARCHAR, converted
+   hosts      1                     INT64
+   score      0.5                   FLOAT64         read and not written
+
+ these types were read from your data - nothing is written until you accept
+ ↑↓ column  e retype  x ignore  ⏎ accept  u upload  r re-plan  q quit
+```
+
+`a` adds a file, `t` sets the destination, `n` negotiates, `x` drops a column,
+`u` uploads and commits. Requests run on a worker thread and the screen keeps
+redrawing while they do, so a multi-gigabyte write shows a byte counter rather
+than a frozen terminal. Quitting with a contract still open abandons it - nothing
+written was ever readable, so there is nothing to undo.
+
+It needs `curses`, which is in the standard library everywhere except Windows;
+there, `pip install windows-curses`, or use `push`.
+
 ## Usage
 
 ```python

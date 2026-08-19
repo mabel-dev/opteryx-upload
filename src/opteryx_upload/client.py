@@ -434,18 +434,24 @@ class ContractClient(UploadClient):
         body = {"schema_fingerprint": fingerprint} if fingerprint else {}
         return self._contract_request("PUT", f"/v2/contracts/{contract_id}/accept", json=body)
 
-    def _write(self, contract_id: str, path: str):
-        """Stream a file up. The body is never held in memory on either side."""
+    def _write(self, contract_id: str, path: str, progress=None):
+        """Stream a file up. The body is never held in memory on either side.
+
+        `progress(sent, total)` is called as the bytes go, for a caller that has
+        somewhere to draw it. It wraps the handle rather than chunking the
+        upload, so the request is still one streamed body of a known length.
+        """
         name = _os.path.basename(path)
+        size = _os.path.getsize(path)
         with open(path, "rb") as handle:
             return self._contract_request(
                 "POST",
                 f"/v2/contracts/{contract_id}/data",
-                data=handle,
+                data=_CountingReader(handle, size, progress) if progress else handle,
                 headers={
                     "x-file-name": name,
                     "Content-Type": "application/octet-stream",
-                    "Content-Length": str(_os.path.getsize(path)),
+                    "Content-Length": str(size),
                 },
             )
 
@@ -504,3 +510,41 @@ class ContractClient(UploadClient):
         if isinstance(payload, dict) and "error" in payload:
             raise error_for_contract(payload)
         raise error_for_response(response.status_code, payload.get("detail", response.text))
+
+
+
+class _CountingReader:
+    """A file handle that says how far through it is.
+
+    `__len__` is not decoration: requests works out a Content-Length from the
+    body when it can, and a wrapper without one is sent chunked instead - which
+    is a different request from the one this client means to make.
+    """
+
+    def __init__(self, handle, total: int, progress):
+        self._handle = handle
+        self._total = total
+        self._progress = progress
+        self._sent = 0
+
+    def __len__(self) -> int:
+        return self._total
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self._handle.read(size)
+        if chunk:
+            self._sent += len(chunk)
+            try:
+                self._progress(self._sent, self._total)
+            except Exception:
+                # A drawing failure is not an upload failure. Losing the
+                # progress line is survivable; losing the upload to it is not.
+                self._progress = lambda *_: None
+        return chunk
+
+    def __iter__(self):
+        while True:
+            chunk = self.read(64 * 1024)
+            if not chunk:
+                return
+            yield chunk
