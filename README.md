@@ -102,8 +102,13 @@ Credentials come from `OPTERYX_TOKEN`, or `OPTERYX_CLIENT_ID` and
 
 ## The full-screen version
 
+Run it with no arguments at a terminal and this is what you get - typing the
+name and nothing else means you want to upload something, not to read a list of
+subcommands. Off a terminal, no arguments prints the usage instead.
+
 ```bash
-opteryx-upload tui findings.csv --to acme.security.findings
+opteryx-upload                                             # a is add, t is target
+opteryx-upload tui findings.csv --to acme.security.findings  # or start it filled in
 ```
 
 Same contract, same calls - what it adds is that the table stays put. At a

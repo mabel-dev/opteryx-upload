@@ -359,10 +359,46 @@ class TestCommands:
         assert code == config.OK
         assert "ct_1" in out
 
-    def test_no_command_prints_help_rather_than_a_traceback(self):
+    def test_no_command_off_a_terminal_prints_help(self):
         code, out, _ = run([])
         assert code == config.USAGE
         assert "push" in out
+
+    def test_no_command_at_a_terminal_opens_the_tui(self, monkeypatch):
+        """Somebody who typed the name and nothing else wants to upload.
+
+        Reading a list of subcommands is what `--help` is for.
+        """
+        opened = {}
+
+        def fake_tui(args, out, err):
+            opened["args"] = args
+            return config.OK
+
+        monkeypatch.setattr(cli, "_is_a_terminal", lambda out: True)
+        monkeypatch.setitem(cli.COMMANDS, "tui", fake_tui)
+        code, _out, _err = run([])
+        assert code == config.OK
+        # parsed through the parser, so it carries every default `tui` has
+        assert opened["args"].command == "tui"
+        assert opened["args"].files == []
+        assert opened["args"].to is None
+
+    def test_a_terminal_means_both_ends(self, monkeypatch):
+        # curses needs a screen to draw on and keys to read; one without the
+        # other is a crash rather than a UI.
+        class Fake:
+            def __init__(self, tty):
+                self._tty = tty
+
+            def isatty(self):
+                return self._tty
+
+        monkeypatch.setattr(cli.sys, "stdin", Fake(True))
+        assert cli._is_a_terminal(Fake(True)) is True
+        assert cli._is_a_terminal(Fake(False)) is False
+        monkeypatch.setattr(cli.sys, "stdin", Fake(False))
+        assert cli._is_a_terminal(Fake(True)) is False
 
 
 class TestValuesSurvive:

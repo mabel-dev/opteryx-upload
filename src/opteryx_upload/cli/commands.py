@@ -44,7 +44,11 @@ PROGRAM = "opteryx-upload"
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROGRAM,
-        description="Upload data to Opteryx, agreeing what it will become first.",
+        description=(
+            "Upload data to Opteryx, agreeing what it will become first. "
+            f"Run `{PROGRAM}` with no arguments at a terminal to open the "
+            "full-screen version."
+        ),
     )
     parser.add_argument("--version", action="version", version=f"{PROGRAM} {__version__}")
     subcommands = parser.add_subparsers(dest="command")
@@ -135,7 +139,9 @@ def build_parser() -> argparse.ArgumentParser:
     abandon.add_argument("contract_id")
     credentials(abandon)
 
-    tui = subcommands.add_parser("tui", help="the full-screen version of push")
+    tui = subcommands.add_parser(
+        "tui", help="the full-screen version of push; the default with no arguments"
+    )
     tui.add_argument("files", nargs="*", metavar="FILE", help="files to start with")
     tui.add_argument("--to", metavar="WORKSPACE.COLLECTION.DATASET", help="where the rows go")
     credentials(tui)
@@ -527,6 +533,16 @@ COMMANDS = {
 }
 
 
+def _is_a_terminal(out) -> bool:
+    """Both ends, because a TUI needs a screen to draw on and keys to read.
+
+    Kept separate so the no-argument behaviour can be tested without a pty.
+    """
+    return bool(
+        hasattr(out, "isatty") and out.isatty() and hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
+    )
+
+
 def main(argv: Optional[Sequence[str]] = None, out=None, err=None) -> int:
     """Run a command and return the exit code. Never raises for an expected failure."""
     out = out or sys.stdout
@@ -534,8 +550,17 @@ def main(argv: Optional[Sequence[str]] = None, out=None, err=None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
     if not args.command:
-        parser.print_help(out)
-        return config.USAGE
+        # Bare `opteryx-upload` at a terminal opens the TUI, because somebody
+        # who typed the name with nothing after it wants to upload something,
+        # not to read a list of subcommands. Parsed through the parser rather
+        # than hand-built so it gets every default the `tui` command has.
+        if _is_a_terminal(out):
+            args = parser.parse_args(["tui"])
+        else:
+            # No terminal to draw on. Printing usage is the only useful answer,
+            # and it goes out as an error because nothing was asked for.
+            parser.print_help(out)
+            return config.USAGE
 
     style = Style(False if getattr(args, "no_color", False) else None, err)
     try:
