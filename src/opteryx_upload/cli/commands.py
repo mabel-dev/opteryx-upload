@@ -56,10 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
     def credentials(sub):
         sub.add_argument("--url", help=f"upload service base URL (${config.ENV_URL})")
         sub.add_argument(
-            "--client-id", help=f"personal access token id (${config.ENV_CLIENT_ID})"
+            "--client-id", help=f"access token username (${config.ENV_CLIENT_ID})"
         )
         sub.add_argument(
-            "--client-secret", help=f"personal access token secret (${config.ENV_CLIENT_SECRET})"
+            "--client-secret", help=f"access token (${config.ENV_CLIENT_SECRET})"
         )
         sub.add_argument("--token", help=f"a bearer JWT (${config.ENV_TOKEN})")
         sub.add_argument("--json", action="store_true", help="print the contract as JSON")
@@ -543,7 +543,10 @@ def _is_a_terminal(out) -> bool:
     Kept separate so the no-argument behaviour can be tested without a pty.
     """
     return bool(
-        hasattr(out, "isatty") and out.isatty() and hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
+        hasattr(out, "isatty")
+        and out.isatty()
+        and hasattr(sys.stdin, "isatty")
+        and sys.stdin.isatty()
     )
 
 

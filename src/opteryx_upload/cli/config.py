@@ -83,10 +83,11 @@ def build_client(
 ) -> ContractClient:
     """A client, or a `ConfigError` naming the variable that would fix it.
 
-    A personal access token wins over an ambient `OPTERYX_TOKEN`. An access
-    token expires in minutes and an upload can take longer than that, so a
-    static one is refused part way through with rows already staged; a PAT is
-    re-exchanged as it ages, and the client resolves it per request.
+    An access token - a username and a token - wins over an ambient
+    `OPTERYX_TOKEN`. A bearer assertion expires in minutes and an upload can
+    take longer than that, so a static one is refused part way through with rows
+    already staged; an access token is re-exchanged as it ages, and the client
+    resolves it per request.
 
     `--token` still wins when passed explicitly - a CI job that already holds a
     valid assertion should not have it ignored. Only the ambient variable loses.
@@ -110,7 +111,7 @@ def build_client(
         credential = token
     elif client_id or client_secret:
         missing = ENV_CLIENT_SECRET if client_id else ENV_CLIENT_ID
-        raise ConfigError(f"a personal access token needs both halves; {missing} is not set")
+        raise ConfigError(f"an access token needs a username too; {missing} is not set")
     else:
         raise ConfigError(
             f"no credentials: set {ENV_CLIENT_ID} and {ENV_CLIENT_SECRET}, or {ENV_TOKEN}"

@@ -99,9 +99,9 @@ will eventually retry the wrong thing:
 
 ### Credentials
 
-Set `OPTERYX_CLIENT_ID` and `OPTERYX_CLIENT_SECRET` to a personal access token.
-`OPTERYX_TOKEN` takes a bearer JWT instead; a PAT in the environment wins over
-one, and `--token` wins over both.
+Set `OPTERYX_CLIENT_ID` to your access token username and `OPTERYX_CLIENT_SECRET`
+to the access token. `OPTERYX_TOKEN` takes a bearer JWT instead; an access token
+in the environment wins over one, and `--token` wins over both.
 
 The service comes from `OPTERYX_UPLOAD_URL` and the authenticate service from
 `OPTERYX_AUTH_URL`. Each has a flag if you would rather pass it.
@@ -148,11 +148,11 @@ row under the cursor.
 drops a column, `u` uploads and commits.
 
 Starting it with no credentials opens the screen rather than refusing: press `c`
-and it asks for a personal access token - the id, then the secret, which is
-masked as you type. It exchanges them straight away, so a mistyped secret is a
+and it asks for your access token username, then the access token, which is
+masked as you type. It exchanges them straight away, so a mistyped token is a
 line on the status bar rather than a 401 half way through negotiating. It never
-asks for a bearer JWT. The id and secret are held for the session and not
-written anywhere; set them in the environment to skip the prompt. Requests run on a worker thread and the screen keeps
+asks for a bearer JWT. Neither is written anywhere - they are held for the
+session; set them in the environment to skip the prompt. Requests run on a worker thread and the screen keeps
 redrawing while they do, so a multi-gigabyte write shows a byte counter rather
 than a frozen terminal. Quitting with a contract still open abandons it - nothing
 written was ever readable, so there is nothing to undo.
@@ -193,21 +193,22 @@ client.upload_and_commit(
 )
 ```
 
-## Authenticating with a Personal Access Token (PAT)
+## Authenticating with an access token
 
-If you have a PAT (`client_id` + `client_secret`) instead of a ready-made JWT, use
-`PATAuthenticator` to exchange it for a short-lived access token. It caches the
+If you have an access token (a username + the token itself) instead of a
+ready-made JWT, use `PATAuthenticator` to exchange it for a short-lived
+assertion. It caches the
 token and transparently re-authenticates before it expires, so you can pass it
 straight through as `token=`:
 
 ```python
 from opteryx_upload import UploadClient, PATAuthenticator
 
-auth = PATAuthenticator(client_id="<client_id>", client_secret="<pat_secret>")
+auth = PATAuthenticator(client_id="<username>", client_secret="<access token>")
 client = UploadClient(token=auth)
 ```
 
-This exchanges the PAT via `POST {auth_url}/token` with `grant_type=client_credentials`
+This exchanges the access token via `POST {auth_url}/token` with `grant_type=client_credentials`
 (default `auth_url` is `https://authenticate.opteryx.app`), the same flow used by
 the `opteryx-sqlalchemy` driver. If the API ever rejects a token as expired/invalid,
 call `auth.invalidate()` and retry to force a fresh exchange.
@@ -316,7 +317,7 @@ client.upload_and_commit(
 )
 ```
 
-### Authenticating with a PAT end-to-end
+### Authenticating with an access token end-to-end
 
 ```python
 from opteryx_upload import UploadClient, PATAuthenticator, Target

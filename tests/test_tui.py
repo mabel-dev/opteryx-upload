@@ -248,8 +248,8 @@ class TestSigningIn:
             line for line in source.splitlines() if not line.strip().startswith("#")
         )
         block = code[code.index('elif key == ord("c")'):code.index('elif key == ord("t")')]
-        assert "access token id:" in block
-        assert "secret:" in block
+        assert "access token username:" in block
+        assert "access token:" in block
         # no field for a bearer assertion, under any of its names
         for invented in ("jwt", "JWT", "bearer", "Bearer"):
             assert invented not in block

@@ -105,8 +105,8 @@ class App:
         #: What was passed as --url, kept so a sign-in from inside the screen
         #: reaches the same service the rest of the session is talking to.
         self.url = url
-        #: What the account line shows. A personal access token's id, which is
-        #: not a secret, or empty when nobody has signed in yet.
+        #: What the account line shows: the access token username, which is not
+        #: a secret, or empty when nobody has signed in yet.
         self.account = account
         self.base_url = base_url
         self.files: List[str] = list(files)
@@ -137,7 +137,7 @@ class App:
         return self.contract.state if self.contract is not None else ""
 
     def sign_in(self, client_id: str, client_secret: str, url: Optional[str] = None) -> None:
-        """Take a personal access token and check it before anything depends on it.
+        """Take an access token and check it before anything depends on it.
 
         The exchange is done here rather than left until the first request, so a
         mistyped secret is a line on the status bar now instead of a 401 in the
@@ -148,7 +148,7 @@ class App:
                 url=url, client_id=client_id, client_secret=client_secret
             )
             # `_token` is the authenticator; calling it performs the exchange,
-            # which is the only thing that can tell us the secret is right.
+            # which is the only thing that can tell us the token is right.
             client._token()
             return client
 
@@ -555,12 +555,12 @@ def handle(app: App, key: int, window, curses_module) -> None:
         app.files.pop(min(app.cursor, len(app.files) - 1))
         app.cursor = min(app.cursor, max(len(app.files) - 1, 0))
     elif key == ord("c"):
-        # A personal access token, and only that. An access token is good for
+        # An access token, and only that. A bearer assertion is good for
         # minutes, so a field asking for one is a field whose contents have
         # expired by the time the upload it authorises gets going.
-        client_id = prompt(window, curses_module, "access token id:", app.account)
+        client_id = prompt(window, curses_module, "access token username:", app.account)
         if client_id:
-            secret = prompt(window, curses_module, "secret:", mask=True)
+            secret = prompt(window, curses_module, "access token:", mask=True)
             if secret:
                 app.sign_in(client_id, secret, app.url)
     elif key == ord("t"):
