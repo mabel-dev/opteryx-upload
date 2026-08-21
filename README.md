@@ -424,6 +424,84 @@ This uses `POST {auth_url}/token` with `grant_type=client_credentials` (default
 A plain string works too, but a bearer JWT lives about five minutes and an
 upload can take longer than that.
 
+## Authenticating from GitHub Actions, without a secret
+
+`GitHubOIDCAuthenticator` is `PATAuthenticator` with nothing stored. GitHub
+mints a short-lived, signed token describing the running workflow, the
+authenticate service verifies it and matches it to a repository registered
+against a client, and hands back the same assertion the access-token flow
+would have. No `UPLOAD_CLIENT` / `UPLOAD_TOKEN` repository secrets, nothing to
+rotate.
+
+```python
+from opteryx_upload import ContractClient, GitHubOIDCAuthenticator
+
+client = ContractClient(token=GitHubOIDCAuthenticator())
+```
+
+The job has to grant itself the right to ask GitHub for a token:
+
+```yaml
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write    # without this there is no token to present
+    steps:
+      - uses: actions/checkout@v4
+      - run: python scripts/upload_scan_results.py
+```
+
+`id-token: write` is what sets `ACTIONS_ID_TOKEN_REQUEST_URL` and
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN` in the job environment; the authenticator
+reads those. Adding a `permissions:` block narrows the job to exactly what it
+lists, so keep `contents: read` if the job checks out code.
+
+The repository must be registered against a client first - which client, and
+what it may do, is decided there, not here. See
+`authenticate.opteryx/scripts/register_federated_credential.py`.
+
+`audience=` defaults to `https://authenticate.opteryx.app` and must match what
+the authenticate service accepts; it is what stops a token GitHub minted for
+some other relying party being replayed. Everything else matches
+`PATAuthenticator` - callable, cached, same `invalidate()` - so `token=` takes
+either.
+
+For a script that runs both in Actions and on a laptop, ask before committing:
+
+```python
+from opteryx_upload import GitHubOIDCAuthenticator, PATAuthenticator
+
+if GitHubOIDCAuthenticator.is_available():
+    auth = GitHubOIDCAuthenticator()
+else:
+    auth = PATAuthenticator(client_id=..., client_secret=...)
+```
+
+## Authenticating from GCP, without a key
+
+`GoogleWorkloadAuthenticator` is the same trade on GCP. Anything running as a
+service account — Cloud Run, a GCE VM, a Cloud Function, a GKE pod with
+Workload Identity — can ask the metadata server for a signed token saying
+which service account it is. No key file, nothing to rotate.
+
+```python
+from opteryx_upload import ContractClient, GoogleWorkloadAuthenticator
+
+client = ContractClient(token=GoogleWorkloadAuthenticator())
+```
+
+The service account must be registered against a client first, and it is
+matched on its immutable numeric id, not its email — delete a service account
+and recreate it with the same name and the email comes back, the id does not.
+See `authenticate.opteryx/scripts/register_federated_credential.py`.
+
+`is_available()` here makes a short request to the metadata server rather than
+reading an environment variable: GCP sets nothing that reliably means "you are
+on GCP with a service account". Off GCP it returns False quickly, and calling
+the authenticator anyway raises with a message saying so.
+
 ## The session flow
 
 `UploadClient` and the `/v1/upload` endpoints still work, so nothing that uses

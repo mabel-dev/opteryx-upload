@@ -1,3 +1,5 @@
+from .auth import GitHubOIDCAuthenticator
+from .auth import GoogleWorkloadAuthenticator
 from .auth import PATAuthenticator
 from .client import ContractClient
 from .client import UploadClient
@@ -70,6 +72,8 @@ __all__ = [
     "NotAuthorized",
     "ContractNotFound",
     "PATAuthenticator",
+    "GitHubOIDCAuthenticator",
+    "GoogleWorkloadAuthenticator",
     "Target",
     "ConflictResolution",
     "SessionInfo",
