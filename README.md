@@ -256,7 +256,8 @@ print(result.table, result.commit_id, result.rows_written)
 ```
 
 Negotiating uploads nothing. Each file is sampled locally — a prefix for text,
-the *footer* for parquet, which is where its schema lives — so it costs
+the *footer* for parquet, which is where its schema lives, the header and
+first whole blocks for Avro, and the whole file for ORC (up to 64 MB) — so it costs
 megabytes whatever the files weigh. Every file is sampled, not just the first:
 one contract covers all of them, so two that disagree are caught here rather
 than at commit.
@@ -512,8 +513,8 @@ file for the version that described them.
 
 ## Notes
 
-- Files are typed from their extension: `.parquet`/`.pq`, `.csv`,
-  `.ndjson`/`.jsonl`. Anything else is refused by name rather than guessed at.
+- Files are typed from their extension: `.parquet`/`.pq`, `.avro`, `.orc`,
+  `.csv`, `.ndjson`/`.jsonl`. Anything else is refused by name rather than guessed at.
 - `token` may be a string or a zero-arg callable, resolved per request, so a
   short-lived assertion can be refreshed transparently between calls.
 

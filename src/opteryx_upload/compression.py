@@ -113,7 +113,7 @@ def resolve(compression, kind: str):
     if compression in (None, False, IDENTITY):
         return None
     if compression == "auto":
-        return None if kind == "parquet" else default_codec()
+        return None if kind in ("parquet", "avro", "orc") else default_codec()
     if compression not in available_codecs():
         raise ValueError(
             f"Unsupported compression codec: {compression!r} (use one of {available_codecs()}, "

@@ -163,6 +163,8 @@ class UploadSession:
         filename = os.path.basename(path)
         content_type = {
             "parquet": "application/octet-stream",
+            "avro": "application/avro",
+            "orc": "application/x-orc",
             "csv": "text/csv",
             "ndjson": "application/x-ndjson",
         }[kind]
@@ -385,7 +387,8 @@ class ContractClient(UploadClient):
     ) -> "Contract":
         """Agree what the data will become. Uploads nothing.
 
-        Each file is sampled locally - a prefix for text, the footer for parquet -
+        Each file is sampled locally - a prefix for text, the footer for parquet,
+        the header and first whole blocks for avro, the whole file for orc -
         so this costs megabytes whatever the files weigh. Every file is sampled,
         not just the first: one contract covers all of them, so two that disagree
         have to be caught here rather than at commit.

@@ -799,7 +799,7 @@ def add_files(app: App, answer: str) -> None:
     found = _expand(answer)
     if not found:
         if os.path.isfile(os.path.expanduser(answer.strip())):
-            app.error = f"{os.path.basename(answer)}: use a .parquet, .csv or .ndjson file"
+            app.error = f"{os.path.basename(answer)}: use a .parquet, .avro, .orc, .csv or .ndjson file"
         else:
             app.error = f"nothing matched {answer}"
         return

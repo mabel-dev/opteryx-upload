@@ -36,6 +36,33 @@ CSV = (
 )
 
 
+def _long(n):
+    """A zig-zag varint long, as Avro writes counts and lengths."""
+    v = (n << 1) ^ (n >> 63)
+    out = bytearray()
+    while v >= 0x80:
+        out.append((v & 0x7F) | 0x80)
+        v >>= 7
+    out.append(v)
+    return bytes(out)
+
+
+def avro_parts(payloads, negative_map_count=False):
+    """An avro container as (header, [blocks]). Walkable, not decodable."""
+    sync = b"\xab" * 16
+
+    def entry(k, v):
+        return _long(len(k)) + k + _long(len(v)) + v
+
+    pairs = [entry(b"avro.codec", b"null"), entry(b"avro.schema", b'{"type":"long"}')]
+    if negative_map_count:
+        map_header = _long(-2) + _long(sum(len(p) for p in pairs))
+    else:
+        map_header = _long(2)
+    header = b"Obj\x01" + map_header + b"".join(pairs) + _long(0) + sync
+    return header, [_long(3) + _long(len(p)) + p + sync for p in payloads]
+
+
 @pytest.fixture
 def client():
     return ContractClient(token="test-token", base_url=BASE_URL)
@@ -147,9 +174,75 @@ class TestSampling:
         with pytest.raises(ValueError, match="parquet"):
             sample(str(path))
 
+    def test_a_small_avro_file_is_sent_whole(self, tmp_path):
+        header, blocks = avro_parts([b"\x01" * 40, b"\x01" * 40])
+        path = tmp_path / "a.avro"
+        path.write_bytes(header + b"".join(blocks))
+        data, kind = sample(str(path))
+        assert kind == "avro"
+        assert data == path.read_bytes()
+
+    def test_a_large_avro_file_is_cut_on_a_block_boundary(self, tmp_path):
+        header, blocks = avro_parts([b"\x01" * 300] * 3)
+        path = tmp_path / "a.avro"
+        path.write_bytes(header + b"".join(blocks))
+        data, _ = sample(str(path), sample_bytes=800)
+        whole = len(header) + len(blocks[0]) + len(blocks[1])
+        assert whole <= 800 < whole + len(blocks[2])
+        assert data == path.read_bytes()[:whole]
+
+    def test_an_avro_first_block_bigger_than_the_sample_is_still_sent(self, tmp_path):
+        header, blocks = avro_parts([b"\x01" * 2000] * 2)
+        path = tmp_path / "a.avro"
+        path.write_bytes(header + b"".join(blocks))
+        data, _ = sample(str(path), sample_bytes=500)
+        assert data == path.read_bytes()[: len(header) + len(blocks[0])]
+
+    def test_an_avro_map_block_that_carries_its_byte_size_is_walked(self, tmp_path):
+        header, blocks = avro_parts([b"\x01" * 300] * 2, negative_map_count=True)
+        path = tmp_path / "a.avro"
+        path.write_bytes(header + b"".join(blocks))
+        data, _ = sample(str(path), sample_bytes=len(header) + len(blocks[0]) + 10)
+        assert data == path.read_bytes()[: len(header) + len(blocks[0])]
+
+    def test_a_file_that_is_not_avro_is_refused(self, tmp_path):
+        path = tmp_path / "a.avro"
+        path.write_bytes(b"definitely not avro")
+        with pytest.raises(ValueError, match="not an avro file"):
+            sample(str(path))
+
+    def test_orc_sends_the_whole_file(self, tmp_path):
+        path = tmp_path / "a.orc"
+        path.write_bytes(b"ORC" + b"\x07" * 500)
+        data, kind = sample(str(path))
+        assert kind == "orc"
+        assert data == path.read_bytes()
+
+    def test_a_file_that_is_not_orc_is_refused(self, tmp_path):
+        path = tmp_path / "a.orc"
+        path.write_bytes(b"definitely not orc")
+        with pytest.raises(ValueError, match="not an orc file"):
+            sample(str(path))
+
+    def test_an_orc_file_too_big_to_send_whole_is_refused_by_name(self, tmp_path, monkeypatch):
+        from opteryx_upload import sampling
+
+        monkeypatch.setattr(sampling, "ORC_SAMPLE_BYTES", 100)
+        path = tmp_path / "big.orc"
+        path.write_bytes(b"ORC" + b"\x07" * 500)
+        with pytest.raises(ValueError, match=r"big\.orc: ORC files over"):
+            sample(str(path))
+
     @pytest.mark.parametrize(
         "name,expected",
-        [("a.csv", "csv"), ("a.ndjson", "ndjson"), ("a.jsonl", "ndjson"), ("a.parquet", "parquet")],
+        [
+            ("a.csv", "csv"),
+            ("a.ndjson", "ndjson"),
+            ("a.jsonl", "ndjson"),
+            ("a.parquet", "parquet"),
+            ("a.avro", "avro"),
+            ("a.orc", "orc"),
+        ],
     )
     def test_kinds_from_the_extension(self, name, expected):
         assert detect_kind(name) == expected

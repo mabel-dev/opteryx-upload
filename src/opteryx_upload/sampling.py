@@ -4,7 +4,7 @@ This is what makes a contract cheap: the service needs a schema, a schema lives
 in a few megabytes, and there is no reason to send four gigabytes to find out
 your column types are wrong.
 
-The two formats want opposite things, and getting either wrong produces a
+The formats want different things, and getting either wrong produces a
 plausible schema rather than an error - which is the worst failure available
 here, because nothing raises and the mistake is only visible later in a catalog:
 
@@ -16,6 +16,15 @@ here, because nothing raises and the mistake is only visible later in a catalog:
   length exactly, and a footer with the magic in front of it is a file a reader
   will parse - schema, column names and row count included - at a fraction of a
   percent of the original. Measured: 2.3KB for a 960KB file.
+- Avro is a container: a header holding the schema and a sync marker, then
+  blocks that each state their own length. A cut mid-block is unreadable and a
+  cut on a block boundary is a valid, shorter file, so the sample is the header
+  plus as many whole blocks as fit, found by walking the lengths and never by
+  decoding.
+- ORC keeps its schema in a footer like parquet, but the service's reader checks
+  every stripe offset against the file and refuses a footer on its own as
+  corrupt. So the sample is the whole file, and one too big for that is refused
+  here, by name, rather than failing at the service.
 """
 
 from __future__ import annotations
@@ -33,11 +42,23 @@ DEFAULT_SAMPLE_BYTES = 4 * 1024 * 1024
 _PARQUET_MAGIC = b"PAR1"
 _FOOTER_TAIL = 8
 
+_AVRO_MAGIC = b"Obj\x01"
+_AVRO_SYNC = 16
+
+_ORC_MAGIC = b"ORC"
+
+#: The largest ORC file that can be negotiated. Matches the service's cap.
+ORC_SAMPLE_BYTES = 64 * 1024 * 1024
+
 
 def detect_kind(path: str) -> Optional[str]:
     extension = os.path.splitext(path)[1].lower().lstrip(".")
     if extension in ("parquet", "pq"):
         return "parquet"
+    if extension == "avro":
+        return "avro"
+    if extension == "orc":
+        return "orc"
     if extension == "csv":
         return "csv"
     if extension in ("ndjson", "jsonl", "json"):
@@ -50,10 +71,14 @@ def sample(path: str, sample_bytes: int = DEFAULT_SAMPLE_BYTES) -> Tuple[bytes, 
     kind = detect_kind(path)
     if kind is None:
         raise ValueError(
-            f"{os.path.basename(path)}: use a .parquet, .csv or .ndjson file"
+            f"{os.path.basename(path)}: use a .parquet, .avro, .orc, .csv or .ndjson file"
         )
     if kind == "parquet":
         return _parquet_sample(path), kind
+    if kind == "avro":
+        return _avro_sample(path, sample_bytes), kind
+    if kind == "orc":
+        return _orc_sample(path), kind
     return _text_sample(path, kind, sample_bytes), kind
 
 
@@ -84,6 +109,104 @@ def _text_sample(path: str, kind: str, sample_bytes: int) -> bytes:
             data += line
             trimmed = data
         return trimmed
+
+
+def _orc_sample(path: str) -> bytes:
+    """The whole file, or a refusal if it is too big to negotiate."""
+    name = os.path.basename(path)
+    if os.path.getsize(path) > ORC_SAMPLE_BYTES:
+        raise ValueError(
+            f"{name}: ORC files over {ORC_SAMPLE_BYTES // (1024 * 1024)} MB cannot be negotiated yet"
+        )
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if not data.startswith(_ORC_MAGIC):
+        raise ValueError(f"{name}: not an orc file")
+    return data
+
+
+def _avro_sample(path: str, sample_bytes: int) -> bytes:
+    """The header and as many whole blocks as fit in `sample_bytes`.
+
+    Always at least one block, so a file whose first block is bigger than the
+    sample still yields something a reader can decode.
+    """
+    size = os.path.getsize(path)
+    end = min(sample_bytes, size)
+    with open(path, "rb") as handle:
+        while True:
+            handle.seek(0)
+            data = handle.read(end)
+            if not data.startswith(_AVRO_MAGIC):
+                raise ValueError(f"{os.path.basename(path)}: not an avro file")
+            if end >= size:
+                return data  # the whole file, ending on its last block
+            cut, blocks = _avro_walk(data)
+            if blocks > 0:
+                return data[:cut]
+            end = min(end * 2, size)  # the header or first block did not fit yet
+
+
+def _avro_walk(data: bytes) -> Tuple[int, int]:
+    """Where the whole blocks in `data` end, and how many there are."""
+    at = _avro_header_end(data)
+    if at is None:
+        return 0, 0
+    blocks = 0
+    while True:
+        count, pos = _avro_long(data, at)
+        if count is None:
+            break
+        length, pos = _avro_long(data, pos)
+        if length is None:
+            break
+        following = pos + length + _AVRO_SYNC
+        if following > len(data):
+            break
+        at = following
+        blocks += 1
+    return at, blocks
+
+
+def _avro_header_end(data: bytes) -> Optional[int]:
+    """Skip the metadata map and sync marker; None if `data` ends inside them."""
+    at = len(_AVRO_MAGIC)
+    while True:
+        count, at = _avro_long(data, at)
+        if count is None:
+            return None
+        if count == 0:
+            break
+        if count < 0:
+            count = -count
+            size, at = _avro_long(data, at)  # the map block's byte size
+            if size is None:
+                return None
+        for _ in range(count * 2):  # key then value, both length-prefixed
+            length, at = _avro_long(data, at)
+            if length is None or length < 0:
+                return None
+            at += length
+            if at > len(data):
+                return None
+    end = at + _AVRO_SYNC
+    return end if end <= len(data) else None
+
+
+def _avro_long(data: bytes, at: int) -> Tuple[Optional[int], int]:
+    """One zig-zag varint long and the offset after it; None if the bytes run out."""
+    value = 0
+    shift = 0
+    for _ in range(10):
+        if at >= len(data):
+            return None, at
+        byte = data[at]
+        at += 1
+        value |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return (value >> 1) ^ -(value & 1), at
+        shift += 7
+    return None, at
 
 
 def _parquet_sample(path: str) -> bytes:

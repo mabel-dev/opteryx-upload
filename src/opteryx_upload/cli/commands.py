@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
         return sub
 
     def upload_arguments(sub):
-        sub.add_argument("files", nargs="+", metavar="FILE", help=".parquet, .csv or .ndjson")
+        sub.add_argument("files", nargs="+", metavar="FILE", help=".parquet, .avro, .orc, .csv or .ndjson")
         sub.add_argument(
             "--to",
             required=True,

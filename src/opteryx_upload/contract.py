@@ -1,8 +1,8 @@
 """A contract, client-side: what was agreed and what may still be done to it.
 
 Every method here maps to one request. What it adds over calling the API by hand
-is that the sampling happens locally - a schema is read from the front of a CSV
-or the footer of a parquet file, so negotiating costs a few megabytes rather than
+is that the sampling happens locally - a schema is read from the front of a CSV,
+the footer of a parquet file or the header of an Avro file, so negotiating costs a few megabytes rather than
 an upload.
 """
 

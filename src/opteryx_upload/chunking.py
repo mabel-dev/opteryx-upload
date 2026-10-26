@@ -20,16 +20,23 @@ _FLUSH_HEADROOM = 2 * 1024 * 1024
 
 TEXT_SPLITTABLE_KINDS = {"csv", "ndjson"}
 
+#: Compressed containers that cannot be split by line or byte offset.
+BINARY_KINDS = {"parquet", "avro", "orc"}
+
 
 def detect_kind(path: str) -> str:
     ext = os.path.splitext(path)[1].lstrip(".").lower()
     if ext in ("parquet", "pq"):
         return "parquet"
+    if ext == "avro":
+        return "avro"
+    if ext == "orc":
+        return "orc"
     if ext == "csv":
         return "csv"
     if ext in ("ndjson", "jsonl", "json"):
         return "ndjson"
-    raise ValueError(f"Cannot infer file kind from extension: {path!r} (expected .parquet/.csv/.ndjson)")
+    raise ValueError(f"Cannot infer file kind from extension: {path!r} (expected .parquet/.avro/.orc/.csv/.ndjson)")
 
 
 def iter_chunks(path: str, kind: str, max_bytes: int = DEFAULT_MAX_PART_BYTES) -> Iterator[bytes]:
@@ -63,11 +70,11 @@ def iter_upload_chunks(
     that decides how many parts a file needs.
 
     Lines are never split across parts, so every chunk parses independently, and
-    CSV chunks repeat the header for the same reason. Parquet is passed through
-    whole and uncompressed whatever `codec` says: it cannot be split, and it is
-    already compressed internally.
+    CSV chunks repeat the header for the same reason. Parquet, Avro and ORC are
+    passed through whole and uncompressed whatever `codec` says: they cannot be
+    split, and they are already compressed internally.
     """
-    if kind == "parquet":
+    if kind in BINARY_KINDS:
         with open(path, "rb") as fh:
             data = fh.read()
         yield data, len(data)
